@@ -1,10 +1,13 @@
 """
 Knowledge Graph Schema Refinement Agent
 
-Three-phase pipeline:
+Three-phase pipeline run over multiple iterations:
   Phase 1 — Summarize: one summarization request per node.
   Phase 2 — Populate: one schema-mapping request per node.
   Phase 3 — Refine: Synchronous agent loop reviews results and modifies the schema.
+
+Each iteration processes 100 new diverse nodes and refines the schema.
+The finalized schema from iteration N feeds as input to iteration N+1.
 
 Modes:
   batch — OpenAI Batch API (cheap, slow).  Default.
@@ -12,8 +15,7 @@ Modes:
 
 Usage:
     source .venv/bin/activate
-    python schema_agent.py              # batch mode (default)
-    python schema_agent.py --mode async  # async mode
+    python schema_agent.py --mode async --iterations 10
 """
 
 import argparse
@@ -22,6 +24,7 @@ import sys
 import json
 import asyncio
 import random
+import subprocess
 from pathlib import Path
 
 from openai import OpenAI, AsyncOpenAI
@@ -132,8 +135,8 @@ class CostTracker:
         )
 
 
-def estimate_total_cost(mode: str = "batch") -> float:
-    """Estimate cost for 100 nodes: Phase 1 + Phase 2 + Phase 3 (standard)."""
+def estimate_per_iteration_cost(mode: str = "batch") -> float:
+    """Estimate cost for a single 100-node iteration: Phase 1 + Phase 2 + Phase 3."""
     if mode == "async":
         p12_cost = estimate_async_cost(NUM_NODES)
     else:
@@ -810,6 +813,31 @@ async def _run_async_phases(
     return p1_results, summaries, p2_results, populated, suggestions
 
 
+def generate_plots() -> None:
+    """Run all plotting scripts after the final iteration."""
+    scripts_dir = Path(__file__).resolve().parent
+    plot_scripts = [
+        scripts_dir / "plot_pca.py",
+        scripts_dir / "plot_node_types.py",
+        scripts_dir / "plot_term_changes.py",
+    ]
+    for script in plot_scripts:
+        if script.exists():
+            print(f"\nRunning {script.name}...")
+            result = subprocess.run(
+                [sys.executable, str(script)],
+                cwd=str(scripts_dir),
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                print(result.stdout.strip())
+            else:
+                print(f"  WARNING: {script.name} failed:\n{result.stderr.strip()}")
+        else:
+            print(f"  WARNING: {script.name} not found, skipping.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Knowledge Graph Schema Refinement Agent")
     parser.add_argument(
@@ -818,36 +846,61 @@ def main():
         default="batch",
         help="batch = OpenAI Batch API (cheap, slow); async = direct async calls (full price, fast)",
     )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=10,
+        help="Number of refinement iterations to run (default 10)",
+    )
     args = parser.parse_args()
     mode = args.mode
+    iterations = args.iterations
 
-    est = estimate_total_cost(mode)
+    est_per = estimate_per_iteration_cost(mode)
+    est_total = round(est_per * iterations, 2)
     print("=" * 60)
     print("Knowledge Graph Schema Refinement Agent")
     print("=" * 60)
     mode_label = "Batch API (50% off)" if mode == "batch" else "Async direct API (standard pricing)"
     print(f"\nMode: {mode_label}")
-    print(f"Estimated cost for {NUM_NODES}-node run: ${est:.2f}")
-    print(f"  Phase 1 (summarize): {NUM_NODES} requests")
-    print(f"  Phase 2 (populate):  {NUM_NODES} requests")
+    print(f"Iterations: {iterations}")
+    print(f"Estimated cost per iteration ({NUM_NODES} nodes): ${est_per:.2f}")
+    print(f"Estimated total cost ({iterations} iterations): ${est_total:.2f}")
+    print(f"  Phase 1 (summarize): {NUM_NODES} requests per iteration")
+    print(f"  Phase 2 (populate):  {NUM_NODES} requests per iteration")
     print(f"  Phase 3 (refine):    synchronous agent loop (~{MAX_TURNS} turns max)")
     print(f"  Model: {MODEL}")
     print()
 
-    budget_input = input(f"Enter your budget cap in USD (default ${est:.2f}): ").strip()
+    budget_input = input(f"Enter per-iteration budget cap in USD (default ${est_per:.2f}): ").strip()
     if budget_input:
         try:
             budget = float(budget_input)
         except ValueError:
             print("Invalid number. Using estimate as budget.")
-            budget = est
+            budget = est_per
     else:
-        budget = est
+        budget = est_per
 
-    print(f"\nBudget set to: ${budget:.2f}")
-    print("Starting pipeline...\n")
+    print(f"\nPer-iteration budget: ${budget:.2f}")
+    print(f"Max total spend: ${budget * iterations:.2f}")
+    print(f"Starting {iterations} iterations...\n")
 
-    run_pipeline(budget, mode=mode)
+    for i in range(1, iterations + 1):
+        print("\n" + "#" * 60)
+        print(f"# ITERATION {i} / {iterations}")
+        print("#" * 60 + "\n")
+        run_pipeline(budget, mode=mode)
+
+    # Generate plots after all iterations
+    print("\n" + "#" * 60)
+    print("# GENERATING PLOTS")
+    print("#" * 60)
+    generate_plots()
+
+    print("\n" + "#" * 60)
+    print(f"# ALL {iterations} ITERATIONS COMPLETE")
+    print("#" * 60)
 
 
 if __name__ == "__main__":

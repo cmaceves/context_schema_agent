@@ -110,60 +110,81 @@ No files are moved or deleted — each run appends new numbered files.
 
 ## Current task
 
-Take the starting schema and **100 diverse nodes** from `nodes.csv` (covering
-all 9 entity types, mixing high-degree and low-degree nodes). For each node:
+Run **multiple iterations** of schema refinement in a single invocation.
+Each iteration processes **100 diverse nodes** (different random sample each
+time) and refines the controlled vocabularies. The schema output of iteration
+N feeds as input to iteration N+1, creating a chained refinement process.
 
-1. **Query the LLM** via the Batch API to summarize important
-   biological/chemical information about the entity (capped at 1,000 tokens).
-2. **Map the summary to schema fields** via a second Batch API call. Each
-   controlled-vocabulary field should return a **list of labels** (an entity
-   may belong to multiple categories).
-3. **Track what works and what doesn't**: which fields are easy to populate,
-   which need new or modified vocabulary terms, which are ambiguous or
-   inapplicable.
+### CLI interface
+```bash
+python schema_agent.py --mode async --iterations 10
+```
+- `--iterations N` (default 10): number of refinement iterations to run
+- `--mode batch|async` (default batch): API mode for Phase 1 & 2
 
-After processing all 100 nodes:
+### Per-iteration workflow
+For each iteration (i = 1 … N):
 
-4. **Refine the controlled vocabularies**: add, rename, or merge vocabulary
-   terms as needed so they best fit the data without being too granular. Do
-   NOT add, remove, or rename schema fields — only modify the term lists
-   within `controlled_vocabularies`.
-5. **Output three files**:
-   - `output/archive/schema_final_N.json` — the updated/improved schema (N = previous run + 1)
-   - `output/archive/refinement_summary_N.md` — structured per-field refinement
-     summary (see format below)
-   - `output/nodes.json` — the 100 test nodes with every schema field filled in
-     using the values determined during the run. Each entry is a JSON object
-     keyed by field name, with values drawn from controlled vocabularies.
-     Each controlled-vocabulary field is a **list** (possibly empty) of matching
-     labels. Fields that could not be determined should be set to `null`.
+1. **Load the latest schema** from `output/archive/schema_final_K.json`
+   (highest K). On iteration 1 this is the pre-existing schema; on subsequent
+   iterations it is the schema finalized by the previous iteration.
+2. **Select 100 new diverse nodes** from `nodes.csv` (covering all 9 entity
+   types, mixing high-degree and low-degree nodes). Each iteration draws a
+   fresh random sample — nodes may repeat across iterations but each sample
+   is independently randomized.
+3. **Phase 1 — Summarize**: query the LLM to summarize each entity (capped at
+   1,000 tokens).
+4. **Phase 2 — Populate**: map each summary to schema fields. Each
+   controlled-vocabulary field returns a **list of labels**.
+5. **Phase 3 — Refine**: synchronous agent loop reviews population results and
+   modifies controlled vocabularies only.
+6. **Output three files** for this iteration:
+   - `output/archive/schema_final_(K+1).json` — the refined schema
+   - `output/archive/refinement_summary_(K+1).md` — structured per-field summary
+   - `output/archive/nodes_(K+1).json` — the 100 populated nodes
+
+### After the final iteration
+All plots are generated automatically:
+- `images/pca_context.png` — PCA of node context vectors (from latest nodes file)
+- `images/node_types_by_iteration.png` — stacked barplot of entity types per iteration
+- `images/term_changes_by_iteration.png` — grouped barplot of terms added/removed per iteration
+
+### Budget
+The user is prompted **once** for a per-iteration budget cap (in USD). This
+same cap applies independently to each iteration. Total spend =
+per-iteration budget × number of iterations (worst case).
 
 #### Refinement summary format
 For each controlled-vocabulary field, ranked by coverage % (highest first):
-- **field_name** — coverage: XX%
+- **field_name** — coverage: XX% | applicable coverage: YY%
   - Terms added: term1, term2, ...
   - Count of terms added: N
   - Terms removed: term1, term2, ...
   - Count of terms removed: N
 
+Where "coverage" = nodes with values / total, "applicable coverage" = nodes
+with values / nodes where the LLM responded (excludes genuinely inapplicable).
 All 21 fields must be listed. If no changes, show "Terms added: none" /
 "Terms removed: none". Nothing else in the summary.
 
 ### Rules for this task
-- Select 100 nodes that are diverse: cover all 9 entity types, mix high-degree
-  and low-degree nodes
-- Use the LLM for entity context via Batch API
+- Each iteration selects 100 new diverse nodes: cover all 9 entity types, mix
+  high-degree and low-degree nodes. Samples are independently randomized.
+- Use the LLM for entity context via Batch API or async API
 - For each node, record which fields you could fill and which you could not
 - When you encounter a value that fits a field but is not in the controlled
   vocabulary, add, rename, or merge vocabulary terms as appropriate
 - **Schema fields are fixed** — do NOT add, remove, or rename fields. Only
   modify the controlled vocabulary term lists.
-- **Maximum 20 unique terms** per controlled vocabulary. If a vocabulary is at
-  the cap, remove a term before adding a new one.
-- **No null-like placeholder values** in any controlled vocabulary. Do not use
-  terms like "not_applicable", "unknown", "none", "not_specified",
-  "none_known", "unclassified", or "other". If no vocabulary term fits a
-  node's field, the value should be `null` (JSON null), not a placeholder term.
+- **Maximum 20 unique terms** per controlled vocabulary. This is a hard limit
+  enforced programmatically — vocabularies over 20 terms are truncated on save.
+  Remove or merge terms before adding new ones if at the cap.
+- **No null-like placeholder values** in any controlled vocabulary. Terms like
+  "not_applicable", "unknown", "none", "not_specified", "none_known",
+  "unclassified", "other", "not_a_drug", "not_organism_specific" are
+  automatically stripped from vocabularies on save and from populated node
+  values after Phase 2. If no vocabulary term fits a node's field, the value
+  should be `null` (JSON null), not a placeholder term.
 - Controlled-vocabulary fields return **lists** of labels, not single values
 - Save at least 2 versioned checkpoints before finalizing
 - When calling save_schema or finalize_schema, always pass the full schema object
@@ -173,29 +194,33 @@ All 21 fields must be listed. If no changes, show "Terms added: none" /
 ## Architecture
 
 ### Pipeline overview
-1. Load the starting schema from `output/archive/schema_final_N.json` (highest N)
-   and set the output run number to N+1
-2. Select 100 diverse node IDs
-3. **Phase 1 — Summarize** (Batch API):
-   a. Build a JSONL file with one summarization request per node
-   b. Upload and submit the batch
-   c. Poll until complete, download results
-   d. Parse summaries from the output JSONL
-4. **Phase 2 — Populate** (Batch API):
-   a. Build a JSONL file with one schema-mapping request per node (summary +
-      schema → populated fields as lists of labels)
-   b. Upload and submit the batch
-   c. Poll until complete, download results
-   d. Parse populated node objects from the output JSONL
-   e. Write populated nodes directly to `output/nodes.json`
+The pipeline runs an outer loop of I iterations (default 10). Each iteration
+chains from the previous one's finalized schema.
+
+**Outer loop** (for iteration i = 1 … I):
+1. Load the latest schema from `output/archive/schema_final_K.json` (highest K)
+   and set the output run number to K+1
+2. Select 100 new diverse node IDs (fresh random sample)
+3. **Phase 1 — Summarize** (Batch API or async):
+   a. Build requests — one summarization request per node
+   b. Submit and collect results
+   c. Parse summaries
+4. **Phase 2 — Populate** (Batch API or async):
+   a. Build requests — one schema-mapping request per node
+   b. Submit and collect results
+   c. Parse populated node objects
+   d. Write populated nodes to `output/archive/nodes_(K+1).json`
 5. **Phase 3 — Refine vocabularies** (synchronous agent loop):
    a. Analyze Phase 2 results (coverage stats, term frequencies, suggested
       vocabulary additions)
    b. Agent loop receives aggregate analysis + current schema (NOT all 100 nodes)
    c. Agent modifies only the controlled vocabularies (not the fields), saves
       checkpoints, writes refinement summary, and finalizes
-6. Output: `schema_final_(N+1).json` and `refinement_summary_(N+1).md` in
-   `output/archive/`, and `nodes.json` in `output/`
+6. Clean up schema checkpoint intermediates from `output/archive/`
+7. Output: `schema_final_(K+1).json`, `refinement_summary_(K+1).md`, and
+   `nodes_(K+1).json` in `output/archive/`
+
+**After final iteration**: generate all plots (PCA, node types, term changes).
 
 ### Tools the agent has access to (Phase 3 only)
 - `save_schema(schema, version)` — checkpoint to `output/archive/`
@@ -227,7 +252,7 @@ The final schema_final.json should include:
 - `notes`: agent's observations about the domain
 
 ### Populated nodes output format
-The output/nodes.json should be an array of objects, one per test node.
+The output/archive/nodes_N.json should be an array of objects, one per test node.
 Each controlled-vocabulary field is a **list** of matching labels (an entity may
 belong to multiple categories). Fields that could not be determined are `null`.
 ```json
@@ -264,24 +289,31 @@ Each value in a list must come from the corresponding controlled vocabulary.
 - Keep tool functions pure — no side effects except `save_schema`, `finalize_schema`, `write_summary`, `write_nodes`
 - Hard ceiling of 40 agent turns in Phase 3 to prevent runaway loops
 - Print progress and tool calls to stdout so the run is observable
-- No asyncio or aiohttp — all I/O is synchronous or via Batch API
+- Phase 1 & 2 support two modes: synchronous Batch API or async direct API calls (`--mode batch` or `--mode async`)
+- Multi-iteration support via `--iterations N` flag (default 10)
+- Plots are generated automatically after the final iteration
 
 ---
 
 ## File structure
 ```
-schema_agent.py       # main pipeline: batch submission (Phase 1/2) + agent loop (Phase 3)
-tools/
-  graph_tools.py      # sample_nodes, get_type_distribution, get_predicate_distribution
-  batch_tools.py      # build_summarize_request, build_populate_request, submit_batch, poll_batch, download_batch_results
-  schema_tools.py     # load_latest_schema, save_schema, finalize_schema, write_summary, write_nodes
+scripts/
+  schema_agent.py     # main pipeline: Phase 1/2 (batch or async) + agent loop (Phase 3)
+  plot_pca.py         # ad-hoc PCA plotting script
+  plot_node_types.py  # stacked barplot of node type distribution per iteration
+  color_scheme.py     # colorblind-friendly palette for entity types
+  tools/
+    graph_tools.py    # sample_nodes, get_type_distribution, get_predicate_distribution
+    batch_tools.py    # build_summarize_request, build_populate_request, submit_batch, poll_batch, download_batch_results
+    async_tools.py    # async direct-API alternatives to batch_tools (Phase 1 & 2)
+    schema_tools.py   # load_latest_schema, save_schema, finalize_schema, write_summary, write_nodes, cleanup_checkpoints
 output/
-  nodes.json          # populated context objects for test nodes (100) or full run (250k)
-  archive/            # all schema versions and summaries (schema_final_N.json, refinement_summary_N.md)
+  archive/            # all versioned outputs (schema_final_N.json, refinement_summary_N.md, nodes_N.json)
   batches/
     batch_ids/        # one JSON file per batch submission (batch_id, phase, metadata)
     inputs/           # JSONL files submitted to the Batch API (phase1_batch_001.jsonl, etc.)
     outputs/          # JSONL files returned by the Batch API (phase1_batch_001_output.jsonl, etc.)
+images/               # ad-hoc plots (PCA, etc.)
 db/
   nodes.csv           # source node data (250k nodes, 9 entity types)
 ```
