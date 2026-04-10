@@ -1,0 +1,105 @@
+- **organism** — coverage: 98% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **tissue_location** — coverage: 88% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **cell_type** — coverage: 86% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **cellular_compartment** — coverage: 93% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **biological_system** — coverage: 92% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **biological_scale** — coverage: 99% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **biological_process** — coverage: 99% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **molecular_function** — coverage: 97% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **pathway_category** — coverage: 93% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **mechanism_of_action** — coverage: 87% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **disease_association** — coverage: 95% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **clinical_relevance** — coverage: 87% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **phenotype_category** — coverage: 76% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **chemical_classification** — coverage: 39% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **drug_class** — coverage: 30% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **regulatory_role** — coverage: 45% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **interaction_type** — coverage: 80% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **inheritance_pattern** — coverage: 43% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **developmental_stage** — coverage: 78% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **taxonomic_domain** — coverage: 98% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0
+- **expression_context** — coverage: 90% | applicable coverage: 100%
+  - Terms added: none
+  - Count of terms added: 0
+  - Terms removed: none
+  - Count of terms removed: 0

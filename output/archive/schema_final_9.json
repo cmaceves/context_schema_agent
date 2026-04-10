@@ -1,0 +1,686 @@
+{
+  "fields": [
+    {
+      "name": "id",
+      "description": "Unique identifier for the node (carried from source CSV).",
+      "field_type": "string",
+      "applies_to_types": [],
+      "required": true
+    },
+    {
+      "name": "name",
+      "description": "Primary name of the entity (carried from source CSV).",
+      "field_type": "string",
+      "applies_to_types": [],
+      "required": true
+    },
+    {
+      "name": "organism",
+      "description": "Species or organism this entity is found in or derived from.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "organism_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "tissue_location",
+      "description": "Primary tissue(s) or organ(s) where this entity is localized, expressed, or most relevant.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "tissue_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "cell_type",
+      "description": "Cell type(s) where this entity is active, expressed, or primarily relevant.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "cell_type_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "cellular_compartment",
+      "description": "Subcellular compartment(s) where this entity is localized or functions.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "cellular_compartment_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "biological_system",
+      "description": "Organ system(s) this entity is most associated with.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "biological_system_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "biological_scale",
+      "description": "The scale of biological organization at which this entity primarily operates.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "biological_scale_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "biological_process",
+      "description": "Major biological process(es) this entity participates in.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "biological_process_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "molecular_function",
+      "description": "Molecular function(s) performed by or associated with this entity.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "molecular_function_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "pathway_category",
+      "description": "Category of biological pathway this entity participates in or represents.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "pathway_category_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "mechanism_of_action",
+      "description": "Primary mechanism through which this entity exerts its biological effect.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "mechanism_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "disease_association",
+      "description": "Broad disease category or categories this entity is associated with.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "disease_category_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "clinical_relevance",
+      "description": "How this entity is relevant in a clinical or translational context.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "clinical_relevance_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "phenotype_category",
+      "description": "Broad phenotypic domain affected by or describing this entity.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "phenotype_category_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "chemical_classification",
+      "description": "Chemical or structural class of this entity.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "chemical_class_vocab",
+      "applies_to_types": [
+        {
+          "type": "ChemicalSubstance"
+        }
+      ],
+      "required": false
+    },
+    {
+      "name": "drug_class",
+      "description": "Pharmacological or therapeutic class if this entity is a drug or drug-like molecule.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "drug_class_vocab",
+      "applies_to_types": [
+        {
+          "type": "ChemicalSubstance"
+        }
+      ],
+      "required": false
+    },
+    {
+      "name": "regulatory_role",
+      "description": "How this entity participates in biological regulation.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "regulatory_role_vocab",
+      "applies_to_types": [
+        {
+          "type": "MacromolecularMachine"
+        },
+        {
+          "type": "GeneFamily"
+        },
+        {
+          "type": "BiologicalProcessOrActivity"
+        }
+      ],
+      "required": false
+    },
+    {
+      "name": "interaction_type",
+      "description": "Dominant mode of molecular interaction for this entity.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "interaction_type_vocab",
+      "applies_to_types": [
+        {
+          "type": "MacromolecularMachine"
+        },
+        {
+          "type": "ChemicalSubstance"
+        },
+        {
+          "type": "GeneFamily"
+        }
+      ],
+      "required": false
+    },
+    {
+      "name": "inheritance_pattern",
+      "description": "Mode of genetic inheritance associated with this entity.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "inheritance_vocab",
+      "applies_to_types": [
+        {
+          "type": "Disease"
+        },
+        {
+          "type": "PhenotypicFeature"
+        },
+        {
+          "type": "MacromolecularMachine"
+        },
+        {
+          "type": "GeneFamily"
+        }
+      ],
+      "required": false
+    },
+    {
+      "name": "developmental_stage",
+      "description": "Developmental stage(s) at which this entity is most relevant or active.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "developmental_stage_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "taxonomic_domain",
+      "description": "Broad domain of life this entity belongs to or is found in.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "taxonomic_domain_vocab",
+      "applies_to_types": [],
+      "required": false
+    },
+    {
+      "name": "expression_context",
+      "description": "Condition or context under which this entity is expressed or activated.",
+      "field_type": "controlled",
+      "controlled_vocabulary": "expression_context_vocab",
+      "applies_to_types": [
+        {
+          "type": "MacromolecularMachine"
+        },
+        {
+          "type": "GeneFamily"
+        }
+      ],
+      "required": false
+    }
+  ],
+  "controlled_vocabularies": {
+    "organism_vocab": [
+      "homo_sapiens",
+      "mus_musculus",
+      "rattus_norvegicus",
+      "drosophila_melanogaster",
+      "caenorhabditis_elegans",
+      "saccharomyces_cerevisiae",
+      "danio_rerio",
+      "xenopus_laevis",
+      "arabidopsis_thaliana",
+      "escherichia_coli",
+      "gallus_gallus",
+      "sus_scrofa",
+      "bos_taurus",
+      "plasmodium_falciparum",
+      "mycobacterium_tuberculosis",
+      "streptomyces_species",
+      "staphylococcus_aureus",
+      "pseudomonas_aeruginosa",
+      "multiple_organisms"
+    ],
+    "tissue_vocab": [
+      "brain",
+      "liver",
+      "heart",
+      "lung",
+      "kidney",
+      "blood",
+      "skin",
+      "bone_marrow",
+      "intestine",
+      "pancreas",
+      "skeletal_muscle",
+      "adipose_tissue",
+      "spleen",
+      "thymus",
+      "retina",
+      "ovary",
+      "testis",
+      "adrenal_gland",
+      "thyroid",
+      "breast",
+      "prostate",
+      "pharynx",
+      "larynx",
+      "esophagus",
+      "spinal_cord",
+      "cerebellum",
+      "hippocampus",
+      "cortex",
+      "lymph_node",
+      "oral_mucosa"
+    ],
+    "cell_type_vocab": [
+      "epithelial",
+      "fiberoblast",
+      "neuron",
+      "glial",
+      "astrocyte",
+      "purkinje_cell",
+      "hepatocyte",
+      "macrophage",
+      "t_cell",
+      "b_cell",
+      "nk_cell",
+      "dendritic_cell",
+      "neutrophil",
+      "erythrocyte",
+      "platelet",
+      "endothelial",
+      "smooth_muscle",
+      "cardiomyocyte",
+      "adipocyte",
+      "osteoblast",
+      "stem_cell",
+      "beta_cell",
+      "enterocyte",
+      "oocyte",
+      "photoreceptor_cells",
+      "keratinocyte",
+      "muscle_cell",
+      "tumor_cell",
+      "mast_cell",
+      "basophil"
+    ],
+    "cellular_compartment_vocab": [
+      "cytoplasm",
+      "nucleus",
+      "mitochondria",
+      "plasma_membrane",
+      "endoplasmic_reticulum",
+      "golgi_apparatus",
+      "lysosome",
+      "peroxisome",
+      "cytoskeleton",
+      "ribosome",
+      "extracellular_space",
+      "cell_surface",
+      "chromatin",
+      "synaptic_cleft",
+      "axon",
+      "vesicle",
+      "outer_membrane",
+      "apical_membrane",
+      "endosomal_compartment",
+      "nucleus_cytoplasm"
+    ],
+    "biological_system_vocab": [
+      "nervous",
+      "cardiovascular",
+      "respiratory",
+      "digestive",
+      "immune",
+      "endocrine",
+      "reproductive",
+      "urinary",
+      "musculoskeletal",
+      "integumentary",
+      "hematopoietic",
+      "lymphatic",
+      "vascular_system"
+    ],
+    "biological_scale_vocab": [
+      "molecular",
+      "subcellular",
+      "cellular",
+      "tissue",
+      "organ",
+      "organ_system",
+      "organism",
+      "population"
+    ],
+    "biological_process_vocab": [
+      "signal_transduction",
+      "gene_regulation",
+      "metabolism",
+      "cell_cycle",
+      "apoptosis",
+      "immune_response",
+      "inflammation",
+      "dna_repair",
+      "protein_folding",
+      "transport",
+      "cell_adhesion",
+      "cell_differentiation",
+      "cell_migration",
+      "angiogenesis",
+      "development",
+      "homeostasis",
+      "circadian_rhythm",
+      "synaptic_transmission",
+      "neuroplasticity",
+      "oxidative_phosphorylation",
+      "autophagy",
+      "wound_healing",
+      "immune_evasion",
+      "tissue_repair",
+      "phagocytosis",
+      "cell_signaling"
+    ],
+    "molecular_function_vocab": [
+      "kinase_activity",
+      "phosphatase_activity",
+      "protease_activity",
+      "ligase_activity",
+      "oxidoreductase_activity",
+      "transferase_activity",
+      "hydrolase_activity",
+      "receptor_binding",
+      "dna_binding",
+      "rna_binding",
+      "transporter_activity",
+      "channel_activity",
+      "structural_role",
+      "chaperone_activity",
+      "enzyme_regulation",
+      "signal_receptor_activity",
+      "transcription_regulation",
+      "membrane_assembly",
+      "gene_expression_modulation"
+    ],
+    "pathway_category_vocab": [
+      "metabolic",
+      "signaling",
+      "growth_factor_signaling",
+      "immune_signaling",
+      "cell_cycle_regulation",
+      "apoptotic",
+      "developmental",
+      "dna_damage_response",
+      "hormonal_signaling",
+      "neurotransmitter_signaling",
+      "lipid_metabolism",
+      "amino_acid_metabolism",
+      "carbohydrate_metabolism",
+      "xenobiotic_metabolism",
+      "biosynthetic",
+      "degradation",
+      "pathogen_response"
+    ],
+    "mechanism_vocab": [
+      "enzyme_inhibition",
+      "enzyme_activation",
+      "receptor_agonism",
+      "allosteric_modulation",
+      "ion_channel_blockade",
+      "transporter_inhibition",
+      "gene_expression_modulation",
+      "epigenetic_modification",
+      "protein_protein_interaction",
+      "membrane_disruption",
+      "oxidative_stress",
+      "immune_modulation",
+      "hormone_mimicry",
+      "dna_intercalation",
+      "cytokine_inhibition"
+    ],
+    "disease_category_vocab": [
+      "neoplastic",
+      "head_and_neck_neoplastic",
+      "cardiovascular",
+      "neurodegenerative",
+      "autoimmune",
+      "metabolic",
+      "inborn_error_of_metabolism",
+      "infectious",
+      "respiratory",
+      "renal",
+      "hepatic",
+      "musculoskeletal",
+      "dermatological",
+      "hematological",
+      "psychiatric",
+      "endocrine",
+      "congenital",
+      "ophthalmic",
+      "gastrointestinal",
+      "skeletal_dysplasia",
+      "intellectual_disability"
+    ],
+    "clinical_relevance_vocab": [
+      "therapeutic_target",
+      "biomarker_diagnostic",
+      "biomarker_prognostic",
+      "biomarker_predictive",
+      "drug_approved",
+      "drug_candidate",
+      "risk_factor",
+      "screening_target",
+      "companion_diagnostic",
+      "symptomatic_management"
+    ],
+    "phenotype_category_vocab": [
+      "morphological",
+      "behavioral",
+      "physiological",
+      "biochemical",
+      "metabolomic",
+      "neurological",
+      "immunological",
+      "developmental",
+      "growth",
+      "reproductive",
+      "hematological",
+      "musculoskeletal",
+      "craniofacial",
+      "dermatological",
+      "ophthalmological",
+      "audiological",
+      "tumorigenesis",
+      "cellular_disfunction",
+      "infectious_disease"
+    ],
+    "chemical_class_vocab": [
+      "amino_acid_derivative",
+      "lipid",
+      "steroid",
+      "terpenoid",
+      "alkaloid",
+      "flavonoid",
+      "peptide",
+      "nucleoside_nucleotide",
+      "carbohydrate",
+      "polyketide",
+      "phenylpropanoid",
+      "sulfonamide",
+      "organometallic",
+      "inorganic",
+      "synthetic_small_molecule",
+      "polymer",
+      "antiseptic",
+      "protein_complex",
+      "immune_modulator",
+      "small_molecule_antihistamine",
+      "viral_nucleic_acid",
+      "antioxidant"
+    ],
+    "drug_class_vocab": [
+      "analgesic",
+      "antibiotic",
+      "sulfonamide_antibiotic",
+      "antiviral",
+      "antineoplastic",
+      "anti_inflammatory",
+      "antihypertensive",
+      "antidiabetic",
+      "immunosuppressant",
+      "antidepressant",
+      "antipsychotic",
+      "anticoagulant",
+      "bronchodilator",
+      "hormone_therapy",
+      "antiparasitic",
+      "antifungal",
+      "vaccine",
+      "monoclonal_antibody",
+      "growth_factor_inhibitor",
+      "proton_pump_inhibitor",
+      "targeted_therapy",
+      "regenerative_medicine"
+    ],
+    "regulatory_role_vocab": [
+      "activator",
+      "repressor",
+      "enhancer",
+      "silencer",
+      "modulator",
+      "cofactor",
+      "corepressor",
+      "feedback_inhibitor",
+      "feed_forward_activator",
+      "epigenetic_regulator",
+      "post_translational_modifier"
+    ],
+    "interaction_type_vocab": [
+      "protein_protein",
+      "protein_dna",
+      "protein_rna",
+      "enzyme_substrate",
+      "receptor_ligand",
+      "protein_small_molecule",
+      "rna_rna",
+      "protein_lipid",
+      "covalent_modification",
+      "host_pathogen_interaction"
+    ],
+    "inheritance_vocab": [
+      "autosomal_dominant",
+      "autosomal_recessive",
+      "x_linked_dominant",
+      "x_linked_recessive",
+      "y_linked",
+      "mitochondrial",
+      "polygenic",
+      "de_novo",
+      "somatic",
+      "multifactorial"
+    ],
+    "developmental_stage_vocab": [
+      "embryonic",
+      "fetal",
+      "neonatal",
+      "infant",
+      "juvenile",
+      "adolescent",
+      "adult",
+      "aging",
+      "all_stages",
+      "mature"
+    ],
+    "taxonomic_domain_vocab": [
+      "bacteria",
+      "archaea",
+      "eukarya_fungi",
+      "eukarya_plantae",
+      "eukarya_animalia_invertebrate",
+      "eukarya_animalia_vertebrate",
+      "eukarya_protista",
+      "virus",
+      "multi_domain",
+      "eukarya_animalia_mammal"
+    ],
+    "expression_context_vocab": [
+      "constitutive",
+      "tissue_specific",
+      "stress_induced",
+      "cell_cycle_dependent",
+      "hormone_responsive",
+      "immune_activated",
+      "hypoxia_induced",
+      "circadian_regulated"
+    ]
+  },
+  "type_specific_fields": {
+    "MacromolecularMachine": [
+      "cellular_compartment",
+      "molecular_function",
+      "interaction_type",
+      "regulatory_role",
+      "expression_context"
+    ],
+    "ChemicalSubstance": [
+      "chemical_classification",
+      "drug_class",
+      "mechanism_of_action",
+      "interaction_type"
+    ],
+    "BiologicalProcessOrActivity": [
+      "biological_process",
+      "biological_scale",
+      "regulatory_role",
+      "pathway_category"
+    ],
+    "Disease": [
+      "disease_association",
+      "clinical_relevance",
+      "inheritance_pattern",
+      "phenotype_category",
+      "biological_system"
+    ],
+    "OrganismTaxon": [
+      "taxonomic_domain",
+      "developmental_stage"
+    ],
+    "GeneFamily": [
+      "molecular_function",
+      "regulatory_role",
+      "interaction_type",
+      "expression_context",
+      "inheritance_pattern"
+    ],
+    "PhenotypicFeature": [
+      "phenotype_category",
+      "biological_system",
+      "inheritance_pattern",
+      "developmental_stage"
+    ],
+    "Pathway": [
+      "pathway_category",
+      "biological_process",
+      "biological_system",
+      "mechanism_of_action"
+    ],
+    "AnatomicalEntity": [
+      "tissue_location",
+      "cell_type",
+      "biological_system",
+      "developmental_stage"
+    ]
+  },
+  "notes": "Schema v2 \u0014 refined after testing against 10 diverse nodes (1 per entity type + 1 extra). 21 novel biological context dimensions. Controlled vocabularies expanded based on real-node validation: added sulfonamide to chemical classes, pharynx/larynx/cerebellum to tissues, dendritic_spine/inner_mitochondrial_membrane to compartments, transcription_repression to molecular functions, growth_factor_signaling to pathways, metabolomic/laboratory_finding to phenotype categories, head_and_neck_neoplastic/inborn_error_of_metabolism to diseases, folate_synthesis_inhibition to mechanisms, and several others. Fields requiring external lookup (Wikidata, Wikipedia) remain optional. Highly specific or obscure entities (e.g. D-threitol plasma levels, microbial genes) are the hardest to populate \u0014 the schema accommodates them via broad categories + not_applicable terms."
+}
