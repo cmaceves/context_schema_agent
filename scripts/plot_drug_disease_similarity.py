@@ -23,6 +23,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from pathlib import Path
 from sklearn.metrics.pairwise import cosine_similarity
+from color_scheme import ENTITY_TYPE_PALETTE
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -151,7 +152,7 @@ sns.boxplot(
     x="Group",
     y="Cosine Similarity",
     data=plot_data,
-    palette=["#4C72B0", "#DD8452"],
+    palette=[ENTITY_TYPE_PALETTE["ChemicalSubstance"], ENTITY_TYPE_PALETTE["Disease"]],
     width=0.5,
     ax=ax,
 )
