@@ -1078,7 +1078,7 @@ def generate_plots() -> None:
 def run_drug_disease_test(mode: str) -> None:
     """Run the drug-disease indication test.
 
-    Loads graph.txt, filters to 'indication' edges, subsets to 100 rows,
+    Loads graph.txt, filters to 'indication' edges, subsets to 500 rows,
     collects unique node IDs, matches them to nodes.csv, then runs Phase 1
     (summarize) and Phase 2 (populate) using the latest schema. Saves
     classified nodes to output/drug_disease_test/nodes_N.json without
@@ -1110,9 +1110,9 @@ def run_drug_disease_test(mode: str) -> None:
 
     print(f"Found {len(indication_rows)} indication edges in graph.txt.")
 
-    # Subset to 100 rows
-    if len(indication_rows) > 100:
-        indication_rows = random.sample(indication_rows, 100)
+    # Subset to 500 rows
+    if len(indication_rows) > 500:
+        indication_rows = random.sample(indication_rows, 500)
     print(f"Sampled {len(indication_rows)} indication edges.")
 
     # Collect unique node IDs from head and tail
