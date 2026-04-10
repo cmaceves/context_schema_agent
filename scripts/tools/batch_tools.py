@@ -322,7 +322,7 @@ def parse_phase2_results(results: list[dict]) -> tuple[list[dict], dict[str, lis
             continue
 
         # Extract suggested additions
-        suggestions = result.pop("suggested_additions", {})
+        suggestions = result.pop("suggested_additions", None) or {}
         for field_name, terms in suggestions.items():
             if isinstance(terms, list):
                 existing = all_suggestions.setdefault(field_name, [])

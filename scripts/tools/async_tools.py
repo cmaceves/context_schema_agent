@@ -34,6 +34,10 @@ OUTPUT_COST_PER_M = 0.60
 # ---------------------------------------------------------------------------
 
 
+MAX_RETRIES = 3
+RETRY_BACKOFF = 2  # seconds, doubled each retry
+
+
 async def _summarize_one(
     client: AsyncOpenAI,
     sem: asyncio.Semaphore,
@@ -45,25 +49,43 @@ async def _summarize_one(
         entity_name=node["name"],
         entity_type=node["label"],
     )
-    async with sem:
-        response = await client.chat.completions.create(
-            model=MODEL,
-            max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-    choice = response.choices[0]
-    return {
-        "custom_id": custom_id,
-        "response": {
-            "body": {
-                "choices": [{"message": {"content": choice.message.content}}],
-                "usage": {
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
+    for attempt in range(MAX_RETRIES):
+        try:
+            async with sem:
+                response = await client.chat.completions.create(
+                    model=MODEL,
+                    max_tokens=1000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+            choice = response.choices[0]
+            return {
+                "custom_id": custom_id,
+                "response": {
+                    "body": {
+                        "choices": [{"message": {"content": choice.message.content}}],
+                        "usage": {
+                            "prompt_tokens": response.usage.prompt_tokens,
+                            "completion_tokens": response.usage.completion_tokens,
+                        },
+                    },
                 },
-            },
-        },
-    }
+            }
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                wait = RETRY_BACKOFF * (2 ** attempt)
+                print(f"[async] Retry {attempt + 1}/{MAX_RETRIES} for {custom_id}: {e}")
+                await asyncio.sleep(wait)
+            else:
+                print(f"[async] FAILED {custom_id} after {MAX_RETRIES} retries: {e}")
+                return {
+                    "custom_id": custom_id,
+                    "response": {
+                        "body": {
+                            "choices": [],
+                            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                        },
+                    },
+                }
 
 
 async def async_phase1_summarize(
@@ -147,26 +169,44 @@ async def _populate_one(
 ) -> dict:
     """Send a single population request. Returns a result dict matching batch output format."""
     prompt = _build_populate_prompt(node, summary_text, schema)
-    async with sem:
-        response = await client.chat.completions.create(
-            model=MODEL,
-            max_tokens=2000,
-            response_format={"type": "json_object"},
-            messages=[{"role": "user", "content": prompt}],
-        )
-    choice = response.choices[0]
-    return {
-        "custom_id": custom_id,
-        "response": {
-            "body": {
-                "choices": [{"message": {"content": choice.message.content}}],
-                "usage": {
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
+    for attempt in range(MAX_RETRIES):
+        try:
+            async with sem:
+                response = await client.chat.completions.create(
+                    model=MODEL,
+                    max_tokens=2000,
+                    response_format={"type": "json_object"},
+                    messages=[{"role": "user", "content": prompt}],
+                )
+            choice = response.choices[0]
+            return {
+                "custom_id": custom_id,
+                "response": {
+                    "body": {
+                        "choices": [{"message": {"content": choice.message.content}}],
+                        "usage": {
+                            "prompt_tokens": response.usage.prompt_tokens,
+                            "completion_tokens": response.usage.completion_tokens,
+                        },
+                    },
                 },
-            },
-        },
-    }
+            }
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                wait = RETRY_BACKOFF * (2 ** attempt)
+                print(f"[async] Retry {attempt + 1}/{MAX_RETRIES} for {custom_id}: {e}")
+                await asyncio.sleep(wait)
+            else:
+                print(f"[async] FAILED {custom_id} after {MAX_RETRIES} retries: {e}")
+                return {
+                    "custom_id": custom_id,
+                    "response": {
+                        "body": {
+                            "choices": [],
+                            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                        },
+                    },
+                }
 
 
 async def async_phase2_populate(

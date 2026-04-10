@@ -34,8 +34,8 @@ This summary then serves as the source material for populating schema fields.
 
 ### OpenAI Batch API
 All LLM calls in Phase 1 (summarization) and Phase 2 (schema-field mapping)
-use the **OpenAI Batch API**. This applies to every run — both the 100-node
-test set and production runs on the full 250k node set.
+use the **OpenAI Batch API**. This applies to every run — both the 500-node
+iteration set and production runs on the full 250k node set.
 
 Batch API mechanics:
 1. Build a JSONL file where each line is a chat completion request:
@@ -47,7 +47,7 @@ Batch API mechanics:
 4. Poll `client.batches.retrieve(batch_id)` until status is `completed`
 5. Download results via `client.files.content(output_file_id)`
 
-Batch size: **5,000 nodes per batch**. For 100 nodes this means 1 batch per
+Batch size: **5,000 nodes per batch**. For 500 nodes this means 1 batch per
 phase; for 250,000 nodes this means 50 batches per phase.
 
 Batch API pricing is **50% off** standard token pricing:
@@ -87,7 +87,7 @@ The starting schema (`output/archive/schema_final_N.json`, highest N) contains:
   interaction_type, inheritance_pattern, developmental_stage, taxonomic_domain,
   expression_context
 - **No CSV columns are repeated** except id and name
-- All context fields use `field_type: "controlled"` with vocabularies of 8–20 terms (max 20)
+- All context fields use `field_type: "controlled"` with vocabularies of 8–30 terms (max 30)
 
 ---
 
@@ -111,16 +111,18 @@ No files are moved or deleted — each run appends new numbered files.
 ## Current task
 
 Run **multiple iterations** of schema refinement in a single invocation.
-Each iteration processes **100 diverse nodes** (different random sample each
+Each iteration processes **500 diverse nodes** (different random sample each
 time) and refines the controlled vocabularies. The schema output of iteration
 N feeds as input to iteration N+1, creating a chained refinement process.
 
 ### CLI interface
 ```bash
 python schema_agent.py --mode async --iterations 10
+python schema_agent.py --mode async --iterations 5 --resume
 ```
 - `--iterations N` (default 10): number of refinement iterations to run
 - `--mode batch|async` (default batch): API mode for Phase 1 & 2
+- `--resume`: resume from the latest `schema_final_N.json` in `output/archive/`
 
 ### Per-iteration workflow
 For each iteration (i = 1 … N):
@@ -128,7 +130,7 @@ For each iteration (i = 1 … N):
 1. **Load the latest schema** from `output/archive/schema_final_K.json`
    (highest K). On iteration 1 this is the pre-existing schema; on subsequent
    iterations it is the schema finalized by the previous iteration.
-2. **Select 100 new diverse nodes** from `nodes.csv` (covering all 9 entity
+2. **Select 500 new diverse nodes** from `nodes.csv` (covering all 9 entity
    types, mixing high-degree and low-degree nodes). Each iteration draws a
    fresh random sample — nodes may repeat across iterations but each sample
    is independently randomized.
@@ -141,13 +143,37 @@ For each iteration (i = 1 … N):
 6. **Output three files** for this iteration:
    - `output/archive/schema_final_(K+1).json` — the refined schema
    - `output/archive/refinement_summary_(K+1).md` — structured per-field summary
-   - `output/archive/nodes_(K+1).json` — the 100 populated nodes
+   - `output/archive/nodes_(K+1).json` — the 500 populated nodes
 
 ### After the final iteration
 All plots are generated automatically:
 - `images/pca_context.png` — PCA of node context vectors (from latest nodes file)
 - `images/node_types_by_iteration.png` — stacked barplot of entity types per iteration
 - `images/term_changes_by_iteration.png` — grouped barplot of terms added/removed per iteration
+
+### Cross-iteration state
+The outer loop in `main()` tracks three pieces of state across iterations:
+
+1. **Cumulative term frequencies** (`cumulative_freq`): a dict mapping each
+   controlled-vocabulary field name to a dict of term → count, accumulated
+   across all iterations. Updated in-place by `update_cumulative_freq()` inside
+   `run_pipeline`. Shown in the Phase 2 analysis so the Phase 3 agent can see
+   which terms are consistently used vs. rarely seen.
+
+2. **Stability counts** (`stability_counts`): per-field count of consecutive
+   iterations with no vocabulary changes. Reset to 0 whenever a field's
+   vocabulary is modified.
+
+3. **Locked fields** (`locked_fields`): fields whose stability count reaches
+   `STABLE_LOCK_THRESHOLD` (default 3). Once locked, a field's vocabulary is
+   frozen: Phase 2 analysis marks it `[LOCKED]`, the Phase 3 prompt instructs
+   the agent to skip it, and suggestions for locked fields are suppressed.
+
+### Term normalization
+All vocabulary terms and populated node values are normalized on save/clean:
+lowercase, strip whitespace, replace spaces with underscores. This is handled
+by `normalize_term()` in `schema_tools.py`. Deduplication is applied after
+normalization.
 
 ### Budget
 The user is prompted **once** for a per-iteration budget cap (in USD). This
@@ -168,7 +194,7 @@ All 21 fields must be listed. If no changes, show "Terms added: none" /
 "Terms removed: none". Nothing else in the summary.
 
 ### Rules for this task
-- Each iteration selects 100 new diverse nodes: cover all 9 entity types, mix
+- Each iteration selects 500 new diverse nodes: cover all 9 entity types, mix
   high-degree and low-degree nodes. Samples are independently randomized.
 - Use the LLM for entity context via Batch API or async API
 - For each node, record which fields you could fill and which you could not
@@ -176,8 +202,8 @@ All 21 fields must be listed. If no changes, show "Terms added: none" /
   vocabulary, add, rename, or merge vocabulary terms as appropriate
 - **Schema fields are fixed** — do NOT add, remove, or rename fields. Only
   modify the controlled vocabulary term lists.
-- **Maximum 20 unique terms** per controlled vocabulary. This is a hard limit
-  enforced programmatically — vocabularies over 20 terms are truncated on save.
+- **Maximum 30 unique terms** per controlled vocabulary. This is a hard limit
+  enforced programmatically — vocabularies over 30 terms are truncated on save.
   Remove or merge terms before adding new ones if at the cap.
 - **No null-like placeholder values** in any controlled vocabulary. Terms like
   "not_applicable", "unknown", "none", "not_specified", "none_known",
@@ -187,7 +213,7 @@ All 21 fields must be listed. If no changes, show "Terms added: none" /
   should be `null` (JSON null), not a placeholder term.
 - Controlled-vocabulary fields return **lists** of labels, not single values
 - Save at least 2 versioned checkpoints before finalizing
-- When calling save_schema or finalize_schema, always pass the full schema object
+- When calling save_schema or finalize_schema, pass only the `controlled_vocabularies` dict (merged into base schema automatically)
 
 ---
 
@@ -200,31 +226,34 @@ chains from the previous one's finalized schema.
 **Outer loop** (for iteration i = 1 … I):
 1. Load the latest schema from `output/archive/schema_final_K.json` (highest K)
    and set the output run number to K+1
-2. Select 100 new diverse node IDs (fresh random sample)
-3. **Phase 1 — Summarize** (Batch API or async):
+2. Select 500 new diverse node IDs (fresh random sample)
+3. **Phase 1 — Summarize** (Batch API or async, gpt-4o-mini):
    a. Build requests — one summarization request per node
    b. Submit and collect results
    c. Parse summaries
-4. **Phase 2 — Populate** (Batch API or async):
+4. **Phase 2 — Populate** (Batch API or async, gpt-4o-mini):
    a. Build requests — one schema-mapping request per node
    b. Submit and collect results
    c. Parse populated node objects
-   d. Write populated nodes to `output/archive/nodes_(K+1).json`
-5. **Phase 3 — Refine vocabularies** (synchronous agent loop):
-   a. Analyze Phase 2 results (coverage stats, term frequencies, suggested
-      vocabulary additions)
-   b. Agent loop receives aggregate analysis + current schema (NOT all 100 nodes)
-   c. Agent modifies only the controlled vocabularies (not the fields), saves
-      checkpoints, writes refinement summary, and finalizes
+   d. Update cumulative term frequencies across iterations
+   e. Write populated nodes to `output/archive/nodes_(K+1).json`
+5. **Phase 3 — Refine vocabularies** (synchronous agent loop, gpt-4o):
+   a. Analyze Phase 2 results (coverage stats, this-iteration + cumulative
+      term frequencies, suggested vocabulary additions; locked fields marked)
+   b. Agent loop receives aggregate analysis + current schema (NOT all 500 nodes)
+   c. Agent modifies only unlocked controlled vocabularies (not the fields),
+      saves checkpoints, writes refinement summary, and finalizes
 6. Clean up schema checkpoint intermediates from `output/archive/`
-7. Output: `schema_final_(K+1).json`, `refinement_summary_(K+1).md`, and
+7. Compare finalized schema to starting schema; update per-field stability
+   counts. Lock fields stable for 3+ consecutive iterations.
+8. Output: `schema_final_(K+1).json`, `refinement_summary_(K+1).md`, and
    `nodes_(K+1).json` in `output/archive/`
 
 **After final iteration**: generate all plots (PCA, node types, term changes).
 
 ### Tools the agent has access to (Phase 3 only)
-- `save_schema(schema, version)` — checkpoint to `output/archive/`
-- `finalize_schema(schema)` — saves `schema_final_N.json` in archive, ends session
+- `save_schema(controlled_vocabularies, version)` — checkpoint to `output/archive/` (vocabs are merged into base schema automatically)
+- `finalize_schema(controlled_vocabularies)` — saves `schema_final_N.json` in archive, ends session (vocabs merged automatically)
 - `write_summary(content)` — writes `refinement_summary_N.md` in archive
 
 ### Utility functions (used programmatically, not as agent tools)
@@ -247,7 +276,7 @@ The final schema_final.json should include:
   - `controlled_vocabulary`: vocabulary name (key in controlled_vocabularies)
   - `applies_to_types`: list of node types, or empty for universal
   - `required`: boolean
-- `controlled_vocabularies`: dict of vocab name → value list (8–20 terms each, max 20)
+- `controlled_vocabularies`: dict of vocab name → value list (8–30 terms each, max 30)
 - `type_specific_fields`: dict of node type → field names
 - `notes`: agent's observations about the domain
 
@@ -277,7 +306,7 @@ Each value in a list must come from the corresponding controlled vocabulary.
 
 - **Language**: Python 3.11+
 - **LLM**: OpenAI API via `openai` Python SDK (synchronous client)
-- **Model**: `gpt-4o-mini` for all LLM calls
+- **Model**: `gpt-4o-mini` for Phase 1 & 2; `gpt-4o` for Phase 3 agent loop
 - **Batch API**: OpenAI Batch API for Phase 1 and Phase 2 (JSONL upload, poll, download)
 - **Validation**: `pydantic` for all structured output
 - **Checkpointing**: write to `output/archive/` after every meaningful step

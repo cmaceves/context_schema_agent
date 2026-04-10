@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import copy
 import os
 import sys
 import json
@@ -27,12 +28,16 @@ import random
 import subprocess
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 from openai import OpenAI, AsyncOpenAI
 
 from tools.graph_tools import (
     get_type_distribution,
     _ensure_loaded,
     _nodes,
+    _nodes_by_id,
     _nodes_by_type,
 )
 from tools.batch_tools import (
@@ -63,6 +68,8 @@ from tools.schema_tools import (
     set_run_number,
     cleanup_checkpoints,
     is_null_like,
+    normalize_term,
+    MAX_VOCAB_SIZE,
 )
 
 # ---------------------------------------------------------------------------
@@ -70,11 +77,19 @@ from tools.schema_tools import (
 # ---------------------------------------------------------------------------
 
 MAX_TURNS = 40
-NUM_NODES = 100
+NUM_NODES = 500
+STABLE_LOCK_THRESHOLD = 3  # lock a field after N consecutive stable iterations
 
-# Standard pricing for Phase 3 agent loop (non-batch)
-INPUT_COST_PER_M = 0.15
-OUTPUT_COST_PER_M = 0.60
+# Phase 3 uses gpt-4o (more reliable for large structured tool outputs)
+PHASE3_MODEL = "gpt-4o"
+
+# gpt-4o-mini pricing for Phase 1 & 2 (batch or async)
+MINI_INPUT_COST_PER_M = 0.15
+MINI_OUTPUT_COST_PER_M = 0.60
+
+# gpt-4o pricing for Phase 3 agent loop
+P3_INPUT_COST_PER_M = 2.50
+P3_OUTPUT_COST_PER_M = 10.00
 
 # Schema is loaded from output/archive/schema_final_N.json (highest N)
 # via load_latest_schema() at pipeline start.
@@ -96,15 +111,15 @@ class CostTracker:
 
     @property
     def cost(self) -> float:
-        # Standard-rate tokens (Phase 3 agent loop)
+        # Phase 3 tokens (gpt-4o, standard rate)
         standard = (
-            self.total_input_tokens * INPUT_COST_PER_M / 1_000_000
-            + self.total_output_tokens * OUTPUT_COST_PER_M / 1_000_000
+            self.total_input_tokens * P3_INPUT_COST_PER_M / 1_000_000
+            + self.total_output_tokens * P3_OUTPUT_COST_PER_M / 1_000_000
         )
-        # Batch-rate tokens (Phase 1 & 2) — 50% off
+        # Phase 1 & 2 tokens (gpt-4o-mini, batch = 50% off, async = full)
         batch = (
-            self.batch_input_tokens * (INPUT_COST_PER_M / 2) / 1_000_000
-            + self.batch_output_tokens * (OUTPUT_COST_PER_M / 2) / 1_000_000
+            self.batch_input_tokens * MINI_INPUT_COST_PER_M / 1_000_000
+            + self.batch_output_tokens * MINI_OUTPUT_COST_PER_M / 1_000_000
         )
         return standard + batch
 
@@ -141,8 +156,8 @@ def estimate_per_iteration_cost(mode: str = "batch") -> float:
         p12_cost = estimate_async_cost(NUM_NODES)
     else:
         p12_cost = estimate_batch_cost(NUM_NODES)
-    # Phase 3: agent loop — ~200k in, ~60k out at standard rates
-    p3_cost = 200_000 * INPUT_COST_PER_M / 1_000_000 + 60_000 * OUTPUT_COST_PER_M / 1_000_000
+    # Phase 3: gpt-4o agent loop — ~80k in, ~15k out (fewer turns than gpt-4o-mini)
+    p3_cost = 80_000 * P3_INPUT_COST_PER_M / 1_000_000 + 15_000 * P3_OUTPUT_COST_PER_M / 1_000_000
     return round(p12_cost + p3_cost, 2)
 
 
@@ -302,7 +317,7 @@ def count_responded(populated: list[dict], schema: dict) -> dict[str, int]:
 
 
 def clean_populated_nodes(populated: list[dict], schema: dict) -> None:
-    """Remove null-like placeholder values from populated node fields in-place."""
+    """Normalize terms and remove null-like placeholders from populated nodes."""
     controlled_fields = {
         f["name"]
         for f in schema.get("fields", [])
@@ -312,10 +327,139 @@ def clean_populated_nodes(populated: list[dict], schema: dict) -> None:
         for fn in controlled_fields:
             val = node.get(fn)
             if isinstance(val, list):
-                cleaned = [t for t in val if not is_null_like(t)]
+                cleaned = [normalize_term(t) for t in val if not is_null_like(t)]
                 node[fn] = cleaned if cleaned else None
-            elif isinstance(val, str) and is_null_like(val):
-                node[fn] = None
+            elif isinstance(val, str):
+                if is_null_like(val):
+                    node[fn] = None
+                else:
+                    node[fn] = normalize_term(val)
+
+
+def update_cumulative_freq(
+    populated: list[dict],
+    schema: dict,
+    cumulative_freq: dict[str, dict[str, int]],
+) -> None:
+    """Update cumulative term frequency counts from populated nodes (in-place)."""
+    fields = [f for f in schema.get("fields", []) if f.get("field_type") == "controlled"]
+    for f in fields:
+        fn = f["name"]
+        if fn not in cumulative_freq:
+            cumulative_freq[fn] = {}
+        for node in populated:
+            val = node.get(fn)
+            if isinstance(val, list):
+                for term in val:
+                    cumulative_freq[fn][term] = cumulative_freq[fn].get(term, 0) + 1
+
+
+def reconstruct_cross_iteration_state(
+    archive_dir: Path,
+) -> tuple[dict[str, dict[str, int]], dict[str, int], set[str]]:
+    """Reconstruct cumulative_freq, stability_counts, and locked_fields
+    from existing nodes_N.json and schema_final_N.json files on disk.
+
+    Returns (cumulative_freq, stability_counts, locked_fields).
+    """
+    # Discover all run numbers that have both a schema and a nodes file
+    schema_files = sorted(archive_dir.glob("schema_final_*.json"))
+    nodes_files = sorted(archive_dir.glob("nodes_*.json"))
+
+    schema_by_n: dict[int, Path] = {}
+    for p in schema_files:
+        try:
+            n = int(p.stem.split("_")[-1])
+            schema_by_n[n] = p
+        except ValueError:
+            continue
+
+    nodes_by_n: dict[int, Path] = {}
+    for p in nodes_files:
+        try:
+            n = int(p.stem.split("_")[-1])
+            nodes_by_n[n] = p
+        except ValueError:
+            continue
+
+    # Run numbers that produced nodes (i.e. completed iterations)
+    completed_runs = sorted(n for n in nodes_by_n if n in schema_by_n)
+
+    if not completed_runs:
+        return {}, {}, set()
+
+    # --- 1. Cumulative term frequencies from all nodes files ---
+    # Use the latest schema for field definitions
+    latest_n = max(schema_by_n)
+    latest_schema = json.loads(schema_by_n[latest_n].read_text(encoding="utf-8"))
+    controlled_fields = [
+        f["name"] for f in latest_schema.get("fields", [])
+        if f.get("field_type") == "controlled"
+    ]
+
+    cumulative_freq: dict[str, dict[str, int]] = {fn: {} for fn in controlled_fields}
+    for n in completed_runs:
+        nodes = json.loads(nodes_by_n[n].read_text(encoding="utf-8"))
+        for node in nodes:
+            for fn in controlled_fields:
+                val = node.get(fn)
+                if isinstance(val, list):
+                    for term in val:
+                        cumulative_freq[fn][term] = cumulative_freq[fn].get(term, 0) + 1
+
+    print(f"  Reconstructed cumulative frequencies from {len(completed_runs)} iteration(s)")
+
+    # --- 2. Stability counts from consecutive schema comparisons ---
+    # Walk completed runs in order; for each consecutive pair, check which
+    # fields changed. Then count backwards from the latest run to find
+    # how many consecutive iterations each field has been stable.
+    changed_per_run: dict[int, set[str]] = {}
+    for i, n in enumerate(completed_runs):
+        # The input schema for run N is schema_final_(N-1)
+        prev_n = n - 1
+        if prev_n not in schema_by_n:
+            continue
+        prev_schema = json.loads(schema_by_n[prev_n].read_text(encoding="utf-8"))
+        curr_schema = json.loads(schema_by_n[n].read_text(encoding="utf-8"))
+        prev_vocabs = prev_schema.get("controlled_vocabularies", {})
+        curr_vocabs = curr_schema.get("controlled_vocabularies", {})
+        changed = set()
+        for fn in controlled_fields:
+            if sorted(prev_vocabs.get(fn, [])) != sorted(curr_vocabs.get(fn, [])):
+                changed.add(fn)
+        changed_per_run[n] = changed
+
+    # Count consecutive stable iterations backwards from the latest
+    stability_counts: dict[str, int] = {fn: 0 for fn in controlled_fields}
+    for n in reversed(completed_runs):
+        changed = changed_per_run.get(n, set())
+        for fn in controlled_fields:
+            if fn in changed:
+                # This field changed in run n — stop counting for it
+                break  # wrong: need per-field tracking
+        # Actually, need to iterate field by field
+    # Redo: walk backwards, for each field independently
+    stability_counts = {}
+    for fn in controlled_fields:
+        count = 0
+        for n in reversed(completed_runs):
+            changed = changed_per_run.get(n, set())
+            if fn in changed:
+                break
+            count += 1
+        stability_counts[fn] = count
+
+    # --- 3. Locked fields ---
+    locked_fields = {
+        fn for fn, count in stability_counts.items()
+        if count >= STABLE_LOCK_THRESHOLD
+    }
+
+    print(f"  Stability counts: { {fn: stability_counts[fn] for fn in sorted(controlled_fields)} }")
+    if locked_fields:
+        print(f"  Locked fields: {', '.join(sorted(locked_fields))}")
+
+    return cumulative_freq, stability_counts, locked_fields
 
 
 def analyze_population_results(
@@ -323,10 +467,13 @@ def analyze_population_results(
     schema: dict,
     suggestions: dict[str, list[str]],
     responded: dict[str, int],
+    cumulative_freq: dict[str, dict[str, int]] | None = None,
+    locked_fields: set[str] | None = None,
 ) -> str:
     """Build a text summary of Phase 2 results for the agent."""
     fields = [f for f in schema.get("fields", []) if f.get("field_type") == "controlled"]
     field_names = [f["name"] for f in fields]
+    locked = locked_fields or set()
 
     coverage: dict[str, int] = {fn: 0 for fn in field_names}
     term_freq: dict[str, dict[str, int]] = {fn: {} for fn in field_names}
@@ -349,27 +496,46 @@ def analyze_population_results(
         pct = coverage[fn] / total * 100 if total else 0
         resp = responded.get(fn, 0)
         app_pct = coverage[fn] / resp * 100 if resp else 0
+        lock_tag = " [LOCKED]" if fn in locked else ""
         lines.append(
             f"  - {fn}: {coverage[fn]}/{total} ({pct:.0f}%) | "
-            f"applicable: {coverage[fn]}/{resp} ({app_pct:.0f}%)"
+            f"applicable: {coverage[fn]}/{resp} ({app_pct:.0f}%){lock_tag}"
         )
 
-    lines.append("\n### Most frequent terms per field (top 5):")
+    lines.append("\n### This-iteration term frequencies (top 10):")
     for fn in field_names:
-        top = sorted(term_freq[fn].items(), key=lambda x: -x[1])[:5]
+        if fn in locked:
+            lines.append(f"  - {fn}: [LOCKED — skipped]")
+            continue
+        top = sorted(term_freq[fn].items(), key=lambda x: -x[1])[:10]
         if top:
             terms_str = ", ".join(f"{t} ({c})" for t, c in top)
             lines.append(f"  - {fn}: {terms_str}")
         else:
             lines.append(f"  - {fn}: (no values)")
 
+    if cumulative_freq:
+        lines.append("\n### Cumulative term frequencies across ALL iterations (top 10):")
+        for fn in field_names:
+            if fn in locked:
+                lines.append(f"  - {fn}: [LOCKED — skipped]")
+                continue
+            cf = cumulative_freq.get(fn, {})
+            top = sorted(cf.items(), key=lambda x: -x[1])[:10]
+            if top:
+                terms_str = ", ".join(f"{t} ({c})" for t, c in top)
+                lines.append(f"  - {fn}: {terms_str}")
+            else:
+                lines.append(f"  - {fn}: (no cumulative data)")
+
     if suggestions:
         lines.append("\n### Suggested vocabulary additions from Phase 2:")
         for fn, terms in sorted(suggestions.items()):
-            lines.append(f"  - {fn}: {terms}")
+            if fn not in locked:
+                lines.append(f"  - {fn}: {terms}")
 
     # Show 5 example nodes
-    lines.append("\n### Example populated nodes (5 of 100):")
+    lines.append(f"\n### Example populated nodes (5 of {total}):")
     examples = populated[:5]
     for ex in examples:
         lines.append(f"\n**{ex.get('name', '?')}** ({ex.get('id', '?')}):")
@@ -391,22 +557,23 @@ TOOLS = [
         "function": {
             "name": "save_schema",
             "description": (
-                "Save a schema draft as a versioned checkpoint to disk. "
-                "You MUST pass the full schema object as the 'schema' argument."
+                "Save a schema draft as a versioned checkpoint. "
+                "Pass ONLY the controlled_vocabularies dict — the rest of the "
+                "schema (fields, type_specific_fields, notes) is merged automatically."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "schema": {
+                    "controlled_vocabularies": {
                         "type": "object",
-                        "description": "The complete schema object to save.",
+                        "description": "The controlled_vocabularies dict mapping vocab name to list of terms.",
                     },
                     "version": {
                         "type": "string",
                         "description": "Version label (e.g. '2.0', '2.1').",
                     },
                 },
-                "required": ["schema", "version"],
+                "required": ["controlled_vocabularies", "version"],
             },
         },
     },
@@ -417,17 +584,17 @@ TOOLS = [
             "description": (
                 "Save the final refined schema as schema_final_N.json in the archive. "
                 "Call this AFTER you have written the summary. "
-                "You MUST pass the full schema object as the 'schema' argument."
+                "Pass ONLY the controlled_vocabularies dict."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "schema": {
+                    "controlled_vocabularies": {
                         "type": "object",
-                        "description": "The complete final schema object.",
+                        "description": "The final controlled_vocabularies dict.",
                     },
                 },
-                "required": ["schema"],
+                "required": ["controlled_vocabularies"],
             },
         },
     },
@@ -454,22 +621,32 @@ TOOLS = [
 ]
 
 
-def dispatch_tool(name: str, input_args: dict) -> str:
-    """Call the appropriate tool function and return its JSON result."""
+def dispatch_tool(name: str, input_args: dict, base_schema: dict) -> str:
+    """Call the appropriate tool function and return its JSON result.
+
+    For save_schema and finalize_schema, the agent passes only the
+    controlled_vocabularies dict. We merge it into a deep copy of
+    base_schema before saving, so the agent never needs to pass the
+    full ~17KB schema object.
+    """
     try:
         if name == "save_schema":
-            schema = input_args.get("schema")
+            vocabs = input_args.get("controlled_vocabularies")
             version = input_args.get("version", "unknown")
-            if not schema:
-                result = {"error": "Missing required 'schema' argument."}
+            if not vocabs:
+                result = {"error": "Missing required 'controlled_vocabularies' argument."}
             else:
-                result = save_schema(schema=schema, version=version)
+                merged = copy.deepcopy(base_schema)
+                merged["controlled_vocabularies"] = vocabs
+                result = save_schema(schema=merged, version=version)
         elif name == "finalize_schema":
-            schema = input_args.get("schema")
-            if not schema:
-                result = {"error": "Missing required 'schema' argument."}
+            vocabs = input_args.get("controlled_vocabularies")
+            if not vocabs:
+                result = {"error": "Missing required 'controlled_vocabularies' argument."}
             else:
-                result = finalize_schema(schema=schema)
+                merged = copy.deepcopy(base_schema)
+                merged["controlled_vocabularies"] = vocabs
+                result = finalize_schema(schema=merged)
         elif name == "write_summary":
             content = input_args.get("content", "")
             if not content:
@@ -488,17 +665,30 @@ def build_refinement_prompt(
     type_summary: str,
     starting_schema: dict,
     analysis: str,
+    locked_fields: set[str] | None = None,
 ) -> str:
     """Build the system prompt for Phase 3 (schema refinement)."""
     schema_json = json.dumps(starting_schema, indent=2)
+    locked = locked_fields or set()
+
+    if locked:
+        locked_list = "\n".join(f"  - {fn}" for fn in sorted(locked))
+        locked_section = (
+            f"\n## Locked fields\n"
+            f"The following fields have been stable for {STABLE_LOCK_THRESHOLD}+ consecutive\n"
+            f"iterations and are LOCKED — do NOT modify their vocabularies:\n"
+            f"{locked_list}\n"
+        )
+    else:
+        locked_section = ""
 
     return f"""You are a schema refinement agent for a biomedical knowledge graph.
 
 ## Context
 You have a starting schema with 21 controlled-vocabulary fields. We have already:
-1. Summarized 100 diverse nodes using LLM knowledge (Phase 1, Batch API)
-2. Populated every schema field for all 100 nodes (Phase 2, Batch API)
-3. Written the populated nodes to output/nodes.json (already done)
+1. Summarized {NUM_NODES} diverse nodes using LLM knowledge (Phase 1)
+2. Populated every schema field for all {NUM_NODES} nodes (Phase 2)
+3. Written the populated nodes to the archive (already done)
 
 Your job is to REVIEW the population results and REFINE the controlled
 vocabularies so they best fit the data without being too granular. Each
@@ -518,9 +708,9 @@ or required flags. You may ONLY modify the term lists inside
 {schema_json}
 ```
 
-## Population analysis (from 100 nodes)
+## Population analysis (from {NUM_NODES} nodes)
 {analysis}
-
+{locked_section}
 ## Your tasks
 1. Review the coverage stats, term frequencies, and suggested additions above.
 2. REFINE the controlled vocabularies ONLY:
@@ -529,17 +719,19 @@ or required flags. You may ONLY modify the term lists inside
    - REMOVE vocabulary terms that are never used and don't add value
    - Do NOT add, remove, or rename fields
    - Do NOT change field descriptions, applies_to_types, or type_specific_fields
-   - Each controlled vocabulary MUST NOT exceed 20 unique terms. This is a HARD
-     LIMIT enforced programmatically — any vocabulary over 20 terms will be
-     truncated on save. If a vocabulary is at 20 and you need to add a term,
-     you MUST remove or merge an existing term first. Prefer making terms more
-     general over exceeding the cap.
+   - Each controlled vocabulary MUST NOT exceed {MAX_VOCAB_SIZE} unique terms. This is a
+     HARD LIMIT enforced programmatically — any vocabulary over {MAX_VOCAB_SIZE} terms
+     will be truncated on save. If a vocabulary is at {MAX_VOCAB_SIZE} and you need to
+     add a term, you MUST remove or merge an existing term first. Prefer making
+     terms more general over exceeding the cap.
    - Do NOT include any placeholder or null-like values in vocabularies (e.g.
      "not_applicable", "unknown", "none", "not_specified", "none_known",
      "unclassified", "other", "not_a_drug", "not_organism_specific"). These
      will be automatically stripped on save. If no vocabulary term fits a node,
      the field value should be null — not a vocabulary term representing absence.
-3. Save at least 2 versioned checkpoints (save_schema) with the FULL schema.
+   - Fields marked [LOCKED] in the analysis are stable — do NOT modify their
+     vocabularies. Skip them entirely.
+3. Save at least 2 versioned checkpoints (save_schema) with the controlled_vocabularies dict.
 4. Write a refinement summary (write_summary) with the following structure for
    EACH controlled-vocabulary field, ranked by coverage percentage (highest first):
      - **field_name** — coverage: XX% | applicable coverage: YY%
@@ -553,19 +745,19 @@ or required flags. You may ONLY modify the term lists inside
    Include ALL 21 fields in the summary, even if no changes were made (show
    "Terms added: none" / "Terms removed: none" in that case). Do not include
    anything else in the summary — no overview, no examples, no commentary.
-5. Finalize the schema (finalize_schema) with the FULL schema object.
+5. Finalize the schema (finalize_schema) with the controlled_vocabularies dict.
 
-IMPORTANT: When calling save_schema or finalize_schema, you MUST include the
-complete schema JSON as the "schema" argument. Do not omit it. The schema must
-retain all original fields unchanged — only `controlled_vocabularies` values
-should differ from the input.
+IMPORTANT: When calling save_schema or finalize_schema, pass ONLY the
+`controlled_vocabularies` dict (mapping vocab name to list of terms). The rest
+of the schema is merged automatically. Do NOT pass the full schema object.
 
 ## Rules
 - Be opinionated about vocabularies: remove unused terms, merge redundant ones
 - Don't be too granular — prefer broader, well-populated vocabulary terms
-- Maximum 20 terms per controlled vocabulary
+- Maximum {MAX_VOCAB_SIZE} terms per controlled vocabulary
 - No null-like placeholder values in any vocabulary
 - NEVER change the fields array, type_specific_fields, or field metadata
+- Fields marked [LOCKED] must not be modified
 - Process everything and finalize in this session"""
 
 
@@ -575,9 +767,10 @@ def phase3_refine(
     analysis: str,
     client: OpenAI,
     tracker: CostTracker,
+    locked_fields: set[str] | None = None,
 ) -> None:
     """Run the synchronous agent loop for schema refinement."""
-    system = build_refinement_prompt(type_summary, starting_schema, analysis)
+    system = build_refinement_prompt(type_summary, starting_schema, analysis, locked_fields)
 
     messages: list[dict] = [
         {"role": "system", "content": system},
@@ -604,7 +797,7 @@ def phase3_refine(
         print(f"{'='*60}")
 
         response = client.chat.completions.create(
-            model=MODEL,
+            model=PHASE3_MODEL,
             max_tokens=16384,
             tools=TOOLS,
             messages=messages,
@@ -633,7 +826,7 @@ def phase3_refine(
                 func_args = {}
 
             print(f"\n[Tool call] {func_name}({json.dumps(func_args, ensure_ascii=False)[:200]}...)")
-            result_str = dispatch_tool(func_name, func_args)
+            result_str = dispatch_tool(func_name, func_args, starting_schema)
             preview = result_str[:300] + "..." if len(result_str) > 300 else result_str
             print(f"[Tool result] {preview}")
 
@@ -678,7 +871,12 @@ def phase3_refine(
 # ---------------------------------------------------------------------------
 
 
-def run_pipeline(budget: float, mode: str = "batch") -> None:
+def run_pipeline(
+    budget: float,
+    mode: str = "batch",
+    cumulative_freq: dict[str, dict[str, int]] | None = None,
+    locked_fields: set[str] | None = None,
+) -> set[str] | None:
     """Run the full 3-phase pipeline.
 
     Parameters
@@ -688,6 +886,16 @@ def run_pipeline(budget: float, mode: str = "batch") -> None:
     mode : str
         "batch" for OpenAI Batch API (cheap, slow) or
         "async" for direct async API calls (full price, fast).
+    cumulative_freq : dict, optional
+        Mutable dict tracking term frequencies across iterations (updated in-place).
+    locked_fields : set, optional
+        Field names whose vocabularies should not be modified.
+
+    Returns
+    -------
+    set[str] | None
+        Set of field names whose vocabularies changed this iteration,
+        or None if the iteration did not produce a finalized schema.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -761,33 +969,60 @@ def run_pipeline(budget: float, mode: str = "batch") -> None:
     clean_populated_nodes(populated_nodes, starting_schema)
     print("Cleaned null-like placeholder values from populated nodes.")
 
+    # ---- Update cumulative term frequencies ----
+    if cumulative_freq is not None:
+        update_cumulative_freq(populated_nodes, starting_schema, cumulative_freq)
+        print("Updated cumulative term frequencies.")
+
     # ---- Write populated nodes to archive ----
     print(f"\nWriting {len(populated_nodes)} populated nodes to output/archive/nodes_{next_run}.json...")
     write_nodes(populated_nodes)
 
     # ---- Phase 2 analysis ----
-    analysis = analyze_population_results(populated_nodes, starting_schema, suggestions, responded)
+    analysis = analyze_population_results(
+        populated_nodes, starting_schema, suggestions, responded,
+        cumulative_freq=cumulative_freq,
+        locked_fields=locked_fields,
+    )
     print("\n" + analysis)
 
     if not tracker.check():
         print("Budget exhausted after Phase 2.")
-        return
+        return None
 
     # ---- Phase 3: Agent refinement (synchronous) ----
     print("\n" + "=" * 60)
     print("PHASE 3: Agent-driven schema refinement")
     print("=" * 60)
-    phase3_refine(starting_schema, type_summary, analysis, client, tracker)
+    phase3_refine(starting_schema, type_summary, analysis, client, tracker, locked_fields)
 
     # ---- Cleanup checkpoint intermediates ----
     cleanup_result = cleanup_checkpoints()
     if cleanup_result["count"]:
         print(f"\nCleaned up {cleanup_result['count']} checkpoint file(s).")
 
+    # ---- Determine which fields changed ----
+    archive_dir = Path(__file__).resolve().parent.parent / "output" / "archive"
+    finalized_path = archive_dir / f"schema_final_{next_run}.json"
+    if finalized_path.exists():
+        finalized_schema = json.loads(finalized_path.read_text(encoding="utf-8"))
+        changed = set()
+        old_vocabs = starting_schema.get("controlled_vocabularies", {})
+        new_vocabs = finalized_schema.get("controlled_vocabularies", {})
+        for fn in old_vocabs:
+            if sorted(old_vocabs.get(fn, [])) != sorted(new_vocabs.get(fn, [])):
+                changed.add(fn)
+        print(f"\nFields changed this iteration: {sorted(changed) if changed else '(none)'}")
+    else:
+        print(f"\nWARNING: schema_final_{next_run}.json not found — iteration may have failed.")
+        changed = None
+
     print("\n" + "=" * 60)
     print("PIPELINE COMPLETE")
     print(tracker.summary())
     print("=" * 60)
+
+    return changed
 
 
 async def _run_async_phases(
@@ -797,20 +1032,22 @@ async def _run_async_phases(
 ) -> tuple[list[dict], dict[str, str], list[dict], list[dict], dict[str, list[str]]]:
     """Run Phase 1 and Phase 2 using direct async API calls."""
     async_client = AsyncOpenAI(api_key=api_key)
+    try:
+        print("=" * 60)
+        print("PHASE 1: Summarizing entities via async API")
+        print("=" * 60)
+        p1_results, summaries = await async_phase1_summarize(nodes, async_client)
 
-    print("=" * 60)
-    print("PHASE 1: Summarizing entities via async API")
-    print("=" * 60)
-    p1_results, summaries = await async_phase1_summarize(nodes, async_client)
+        print("\n" + "=" * 60)
+        print("PHASE 2: Populating schema fields via async API")
+        print("=" * 60)
+        p2_results, populated, suggestions = await async_phase2_populate(
+            nodes, summaries, schema, async_client
+        )
 
-    print("\n" + "=" * 60)
-    print("PHASE 2: Populating schema fields via async API")
-    print("=" * 60)
-    p2_results, populated, suggestions = await async_phase2_populate(
-        nodes, summaries, schema, async_client
-    )
-
-    return p1_results, summaries, p2_results, populated, suggestions
+        return p1_results, summaries, p2_results, populated, suggestions
+    finally:
+        await async_client.close()
 
 
 def generate_plots() -> None:
@@ -838,6 +1075,146 @@ def generate_plots() -> None:
             print(f"  WARNING: {script.name} not found, skipping.")
 
 
+def run_drug_disease_test(mode: str) -> None:
+    """Run the drug-disease indication test.
+
+    Loads graph.txt, filters to 'indication' edges, subsets to 100 rows,
+    collects unique node IDs, matches them to nodes.csv, then runs Phase 1
+    (summarize) and Phase 2 (populate) using the latest schema. Saves
+    classified nodes to output/drug_disease_test/nodes_N.json without
+    modifying the schema.
+    """
+    import csv as _csv
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("ERROR: OPENAI_API_KEY not set.")
+        sys.exit(1)
+
+    # ---- Load graph.txt and filter to indication edges ----
+    graph_path = Path(__file__).resolve().parent.parent / "db" / "graph.txt"
+    if not graph_path.exists():
+        print(f"ERROR: {graph_path} not found.")
+        sys.exit(1)
+
+    indication_rows = []
+    with open(graph_path, newline="", encoding="utf-8") as f:
+        reader = _csv.DictReader(f, fieldnames=["head", "relation", "tail"], delimiter="\t")
+        for row in reader:
+            if row["relation"] == "indication":
+                indication_rows.append(row)
+
+    if not indication_rows:
+        print("ERROR: No 'indication' rows found in graph.txt.")
+        sys.exit(1)
+
+    print(f"Found {len(indication_rows)} indication edges in graph.txt.")
+
+    # Subset to 100 rows
+    if len(indication_rows) > 100:
+        indication_rows = random.sample(indication_rows, 100)
+    print(f"Sampled {len(indication_rows)} indication edges.")
+
+    # Collect unique node IDs from head and tail
+    unique_ids = set()
+    for row in indication_rows:
+        unique_ids.add(row["head"])
+        unique_ids.add(row["tail"])
+    print(f"Unique node IDs from sampled edges: {len(unique_ids)}")
+
+    # Match against nodes.csv
+    _ensure_loaded()
+    matched_nodes = [_nodes_by_id[nid] for nid in unique_ids if nid in _nodes_by_id]
+    unmatched = unique_ids - set(n["id"] for n in matched_nodes)
+    if unmatched:
+        print(f"WARNING: {len(unmatched)} IDs not found in nodes.csv (skipped).")
+    print(f"Matched {len(matched_nodes)} nodes in nodes.csv.")
+
+    if not matched_nodes:
+        print("ERROR: No matching nodes found. Nothing to classify.")
+        sys.exit(1)
+
+    # ---- Load latest schema ----
+    try:
+        schema, latest_n = load_latest_schema()
+    except FileNotFoundError:
+        print("ERROR: No schema found in output/archive/. Place a schema_final_N.json there first.")
+        sys.exit(1)
+
+    # ---- Cost estimate and budget prompt ----
+    if mode == "async":
+        est = estimate_async_cost(len(matched_nodes))
+    else:
+        est = estimate_batch_cost(len(matched_nodes))
+    mode_label = "Batch API (50% off)" if mode == "batch" else "Async direct API (standard pricing)"
+    print(f"\nMode: {mode_label}")
+    print(f"Nodes to classify: {len(matched_nodes)}")
+    print(f"Estimated cost (Phase 1 + Phase 2): ${est:.4f}")
+
+    budget_input = input(f"Enter budget cap in USD (default ${est:.4f}): ").strip()
+    if budget_input:
+        try:
+            budget = float(budget_input)
+        except ValueError:
+            print("Invalid number. Using estimate as budget.")
+            budget = est
+    else:
+        budget = est
+
+    tracker = CostTracker(budget)
+    client = OpenAI(api_key=api_key)
+
+    # ---- Phase 1: Summarize ----
+    if mode == "async":
+        async_client = AsyncOpenAI(api_key=api_key)
+        p1_results, summaries = asyncio.run(
+            async_phase1_summarize(matched_nodes, async_client)
+        )
+    else:
+        print("\n" + "=" * 60)
+        print("PHASE 1: Summarizing entities via Batch API")
+        print("=" * 60)
+        p1_results, summaries = phase1_summarize(matched_nodes, client)
+
+    tracker.record_batch(p1_results)
+    print(tracker.summary())
+
+    if not tracker.check():
+        print("Budget exhausted after Phase 1.")
+        sys.exit(1)
+
+    # ---- Phase 2: Populate ----
+    if mode == "async":
+        p2_results, populated_nodes, _ = asyncio.run(
+            async_phase2_populate(matched_nodes, summaries, schema, async_client)
+        )
+    else:
+        print("\n" + "=" * 60)
+        print("PHASE 2: Populating schema fields via Batch API")
+        print("=" * 60)
+        p2_results, populated_nodes, _ = phase2_populate(
+            matched_nodes, summaries, schema, client
+        )
+
+    tracker.record_batch(p2_results)
+    print(tracker.summary())
+
+    # ---- Clean null-like placeholders ----
+    clean_populated_nodes(populated_nodes, schema)
+    print("Cleaned null-like placeholder values from populated nodes.")
+
+    # ---- Save to output/drug_disease_test/ ----
+    output_dir = Path(__file__).resolve().parent.parent / "output" / "drug_disease_test"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"nodes_{latest_n}.json"
+    output_path.write_text(
+        json.dumps(populated_nodes, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    print(f"\nSaved {len(populated_nodes)} classified nodes → {output_path}")
+    print(tracker.summary())
+    print("Drug-disease indication test complete.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Knowledge Graph Schema Refinement Agent")
     parser.add_argument(
@@ -852,45 +1229,130 @@ def main():
         default=10,
         help="Number of refinement iterations to run (default 10)",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the latest schema_final_N.json in output/archive/",
+    )
+    parser.add_argument(
+        "--drug_disease_test",
+        action="store_true",
+        help="Run drug-disease indication test: classify nodes from indication pairs and save to output/drug_disease_test/",
+    )
+    parser.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        help="Per-iteration budget cap in USD (skips interactive prompt)",
+    )
     args = parser.parse_args()
     mode = args.mode
     iterations = args.iterations
 
+    # Drug-disease indication test — run and exit
+    if args.drug_disease_test:
+        print("=" * 60)
+        print("Drug-Disease Indication Test")
+        print("=" * 60)
+        run_drug_disease_test(mode)
+        return
+
+    # When resuming, show which schema we're starting from
+    if args.resume:
+        try:
+            _, latest_n = load_latest_schema()
+            print("=" * 60)
+            print("Knowledge Graph Schema Refinement Agent (RESUME)")
+            print("=" * 60)
+            print(f"\nResuming from schema_final_{latest_n}.json")
+            print(f"Will produce schema_final_{latest_n + 1}.json through schema_final_{latest_n + iterations}.json")
+        except FileNotFoundError:
+            print("ERROR: --resume specified but no schema_final_N.json found in output/archive/.")
+            sys.exit(1)
+    else:
+        print("=" * 60)
+        print("Knowledge Graph Schema Refinement Agent")
+        print("=" * 60)
+
     est_per = estimate_per_iteration_cost(mode)
     est_total = round(est_per * iterations, 2)
-    print("=" * 60)
-    print("Knowledge Graph Schema Refinement Agent")
-    print("=" * 60)
     mode_label = "Batch API (50% off)" if mode == "batch" else "Async direct API (standard pricing)"
     print(f"\nMode: {mode_label}")
     print(f"Iterations: {iterations}")
     print(f"Estimated cost per iteration ({NUM_NODES} nodes): ${est_per:.2f}")
     print(f"Estimated total cost ({iterations} iterations): ${est_total:.2f}")
-    print(f"  Phase 1 (summarize): {NUM_NODES} requests per iteration")
-    print(f"  Phase 2 (populate):  {NUM_NODES} requests per iteration")
-    print(f"  Phase 3 (refine):    synchronous agent loop (~{MAX_TURNS} turns max)")
-    print(f"  Model: {MODEL}")
+    print(f"  Phase 1+2 (summarize+populate): {NUM_NODES} requests per iteration (gpt-4o-mini)")
+    print(f"  Phase 3 (refine):    synchronous agent loop (~{MAX_TURNS} turns max) ({PHASE3_MODEL})")
     print()
 
-    budget_input = input(f"Enter per-iteration budget cap in USD (default ${est_per:.2f}): ").strip()
-    if budget_input:
-        try:
-            budget = float(budget_input)
-        except ValueError:
-            print("Invalid number. Using estimate as budget.")
-            budget = est_per
+    if args.budget is not None:
+        budget = args.budget
     else:
-        budget = est_per
+        budget_input = input(f"Enter per-iteration budget cap in USD (default ${est_per:.2f}): ").strip()
+        if budget_input:
+            try:
+                budget = float(budget_input)
+            except ValueError:
+                print("Invalid number. Using estimate as budget.")
+                budget = est_per
+        else:
+            budget = est_per
 
     print(f"\nPer-iteration budget: ${budget:.2f}")
     print(f"Max total spend: ${budget * iterations:.2f}")
     print(f"Starting {iterations} iterations...\n")
 
+    # Cross-iteration state
+    if args.resume:
+        archive_dir = Path(__file__).resolve().parent.parent / "output" / "archive"
+        print("\nReconstructing cross-iteration state from previous runs...")
+        cumulative_freq, stability_counts, locked_fields = (
+            reconstruct_cross_iteration_state(archive_dir)
+        )
+    else:
+        cumulative_freq: dict[str, dict[str, int]] = {}
+        locked_fields: set[str] = set()
+        stability_counts: dict[str, int] = {}
+
     for i in range(1, iterations + 1):
         print("\n" + "#" * 60)
         print(f"# ITERATION {i} / {iterations}")
+        if locked_fields:
+            print(f"# Locked fields ({len(locked_fields)}): {', '.join(sorted(locked_fields))}")
         print("#" * 60 + "\n")
-        run_pipeline(budget, mode=mode)
+
+        changed_fields = run_pipeline(
+            budget,
+            mode=mode,
+            cumulative_freq=cumulative_freq,
+            locked_fields=locked_fields,
+        )
+
+        if changed_fields is None:
+            print(f"\nWARNING: Iteration {i} did not produce a finalized schema. "
+                  "Skipping stability update.")
+            continue
+
+        # Update stability tracking — use cumulative_freq keys as the full field list
+        all_fields = set(cumulative_freq.keys()) | changed_fields
+        for fn in all_fields:
+            if fn in changed_fields:
+                stability_counts[fn] = 0
+            else:
+                stability_counts[fn] = stability_counts.get(fn, 0) + 1
+
+        # Lock fields that have been stable for STABLE_LOCK_THRESHOLD iterations
+        newly_locked = {
+            fn for fn, count in stability_counts.items()
+            if count >= STABLE_LOCK_THRESHOLD and fn not in locked_fields
+        }
+        if newly_locked:
+            locked_fields |= newly_locked
+            print(f"\nNewly locked fields (stable for {STABLE_LOCK_THRESHOLD}+ iterations): "
+                  f"{', '.join(sorted(newly_locked))}")
+
+        stable_summary = {fn: stability_counts.get(fn, 0) for fn in sorted(all_fields)}
+        print(f"Stability counts: {stable_summary}")
 
     # Generate plots after all iterations
     print("\n" + "#" * 60)

@@ -13,7 +13,7 @@ _ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
 _current_run_number: int | None = None
 
-MAX_VOCAB_SIZE = 20
+MAX_VOCAB_SIZE = 30
 NULL_LIKE_TERMS = frozenset({
     "not_applicable", "unknown", "none", "not_specified",
     "none_known", "unclassified", "other", "n/a", "na",
@@ -28,21 +28,36 @@ def is_null_like(term: str) -> bool:
     return term.lower().strip() in NULL_LIKE_TERMS
 
 
+def normalize_term(term: str) -> str:
+    """Lowercase a term and replace spaces with underscores."""
+    return term.strip().lower().replace(" ", "_")
+
+
 def _clean_vocabularies(schema: dict) -> list[str]:
-    """Remove null-like terms and enforce 20-term cap on all vocabularies.
+    """Normalize terms, remove null-like terms, and enforce term cap.
 
     Modifies schema in-place. Returns a list of warning strings.
     """
     warnings = []
     vocabs = schema.get("controlled_vocabularies", {})
     for vocab_name, terms in vocabs.items():
-        original_len = len(terms)
+        # Normalize all terms
+        normalized = [normalize_term(t) for t in terms]
         # Remove null-like terms
-        cleaned = [t for t in terms if not is_null_like(t)]
-        removed_nulls = sorted(set(terms) - set(cleaned))
-        if removed_nulls:
+        cleaned = [t for t in normalized if not is_null_like(t)]
+        # Deduplicate (normalization may create duplicates)
+        seen = set()
+        deduped = []
+        for t in cleaned:
+            if t not in seen:
+                seen.add(t)
+                deduped.append(t)
+        cleaned = deduped
+        removed_nulls = sorted(set(normalized) - set(cleaned) - set(t for t in normalized if is_null_like(t)))
+        stripped_nulls = [t for t in normalized if is_null_like(t)]
+        if stripped_nulls:
             warnings.append(
-                f"{vocab_name}: stripped null-like terms: {removed_nulls}"
+                f"{vocab_name}: stripped null-like terms: {sorted(set(stripped_nulls))}"
             )
         # Enforce cap
         if len(cleaned) > MAX_VOCAB_SIZE:
