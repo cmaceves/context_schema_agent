@@ -79,15 +79,18 @@ Batch API pricing (50% off) for the estimate.
 
 The starting schema (`output/archive/schema_final_N.json`, highest N) contains:
 - **2 identity fields**: `id`, `name` (carried from CSV)
-- **21 novel biological context fields**, each with a controlled vocabulary:
-  organism, tissue_location, cell_type, cellular_compartment, biological_system,
-  biological_scale, biological_process, molecular_function, pathway_category,
-  mechanism_of_action, disease_association, clinical_relevance,
-  phenotype_category, chemical_classification, drug_class, regulatory_role,
-  interaction_type, inheritance_pattern, developmental_stage, taxonomic_domain,
-  expression_context
+- **10 novel biological context fields**, each with a controlled vocabulary:
+  tissue_location, cell_type, biological_system, taxonomic_domain, drug_class,
+  developmental_stage, etiology_class, temporal_course, molecular_target,
+  immune_axis
 - **No CSV columns are repeated** except id and name
-- All context fields use `field_type: "controlled"` with vocabularies of 8–30 terms (max 30)
+- All context fields use `field_type: "controlled"` with vocabularies of 8–30
+  terms (max 30), with one exception: `molecular_target` is capped at **60**
+  terms to accommodate subfamily-level granularity needed to discriminate
+  drug–disease axes (e.g., distinguishing serotonin_transporter, bcr_abl,
+  cd20, vegf, gaba_a, hmg_coa_reductase as separate terms rather than
+  collapsing them into "enzyme" / "receptor" families). See the per-field cap
+  table in the rules section below.
 
 ---
 
@@ -102,7 +105,6 @@ At the **start of each run**:
 2. Load the file with the **highest N** as the starting schema.
 3. The new run's outputs use run number **N+1**:
    - `output/archive/schema_final_(N+1).json`
-   - `output/archive/refinement_summary_(N+1).md`
 
 No files are moved or deleted — each run appends new numbered files.
 
@@ -130,8 +132,10 @@ For each iteration (i = 1 … N):
 1. **Load the latest schema** from `output/archive/schema_final_K.json`
    (highest K). On iteration 1 this is the pre-existing schema; on subsequent
    iterations it is the schema finalized by the previous iteration.
-2. **Select 500 new diverse nodes** from `nodes.csv` (covering all 9 entity
-   types, mixing high-degree and low-degree nodes). Each iteration draws a
+2. **Select 500 new nodes** from `nodes.csv` using a stratified sample:
+   ~167 Disease nodes (33.3%), ~167 Drug/ChemicalSubstance nodes (33.3%),
+   and ~166 nodes from the remaining entity types (33.3%). Within each
+   stratum, mix high-degree and low-degree nodes. Each iteration draws a
    fresh random sample — nodes may repeat across iterations but each sample
    is independently randomized.
 3. **Phase 1 — Summarize**: query the LLM to summarize each entity (capped at
@@ -140,9 +144,8 @@ For each iteration (i = 1 … N):
    controlled-vocabulary field returns a **list of labels**.
 5. **Phase 3 — Refine**: synchronous agent loop reviews population results and
    modifies controlled vocabularies only.
-6. **Output three files** for this iteration:
+6. **Output two files** for this iteration:
    - `output/archive/schema_final_(K+1).json` — the refined schema
-   - `output/archive/refinement_summary_(K+1).md` — structured per-field summary
    - `output/archive/nodes_(K+1).json` — the 500 populated nodes
 
 ### After the final iteration
@@ -165,9 +168,17 @@ The outer loop in `main()` tracks three pieces of state across iterations:
    vocabulary is modified.
 
 3. **Locked fields** (`locked_fields`): fields whose stability count reaches
-   `STABLE_LOCK_THRESHOLD` (default 3). Once locked, a field's vocabulary is
+   `STABLE_LOCK_THRESHOLD` (default 5). Once locked, a field's vocabulary is
    frozen: Phase 2 analysis marks it `[LOCKED]`, the Phase 3 prompt instructs
    the agent to skip it, and suggestions for locked fields are suppressed.
+
+### Early termination
+The outer iteration loop **stops early** once every controlled-vocabulary
+field is locked — i.e. `locked_fields == set(all_controlled_fields)`. At that
+point no vocabulary can change in subsequent iterations, so further runs
+would only repeat the same Phase 1 + Phase 2 work without improving the
+schema. After the last meaningful iteration, the pipeline jumps straight to
+plot generation and exits, even if `--iterations N` has remaining budget.
 
 ### Term normalization
 All vocabulary terms and populated node values are normalized on save/clean:
@@ -180,31 +191,27 @@ The user is prompted **once** for a per-iteration budget cap (in USD). This
 same cap applies independently to each iteration. Total spend =
 per-iteration budget × number of iterations (worst case).
 
-#### Refinement summary format
-For each controlled-vocabulary field, ranked by coverage % (highest first):
-- **field_name** — coverage: XX% | applicable coverage: YY%
-  - Terms added: term1, term2, ...
-  - Count of terms added: N
-  - Terms removed: term1, term2, ...
-  - Count of terms removed: N
-
-Where "coverage" = nodes with values / total, "applicable coverage" = nodes
-with values / nodes where the LLM responded (excludes genuinely inapplicable).
-All 21 fields must be listed. If no changes, show "Terms added: none" /
-"Terms removed: none". Nothing else in the summary.
-
 ### Rules for this task
-- Each iteration selects 500 new diverse nodes: cover all 9 entity types, mix
-  high-degree and low-degree nodes. Samples are independently randomized.
+- Each iteration selects 500 new nodes using a stratified sample: ~167
+  Disease nodes (33.3%), ~167 Drug/ChemicalSubstance nodes (33.3%), ~166
+  from remaining entity types (33.3%). Within each stratum, mix high-degree
+  and low-degree nodes. Samples are independently randomized.
 - Use the LLM for entity context via Batch API or async API
 - For each node, record which fields you could fill and which you could not
 - When you encounter a value that fits a field but is not in the controlled
   vocabulary, add, rename, or merge vocabulary terms as appropriate
 - **Schema fields are fixed** — do NOT add, remove, or rename fields. Only
   modify the controlled vocabulary term lists.
-- **Maximum 30 unique terms** per controlled vocabulary. This is a hard limit
-  enforced programmatically — vocabularies over 30 terms are truncated on save.
-  Remove or merge terms before adding new ones if at the cap.
+- **Per-field vocabulary cap** (hard limit enforced programmatically —
+  vocabularies over the cap are truncated on save). Remove or merge terms
+  before adding new ones if at the cap:
+
+  | field | cap |
+  |---|---|
+  | molecular_target | 60 |
+  | all other controlled fields | 30 |
+
+  Minimum vocabulary size is 8 terms per field.
 - **No null-like placeholder values** in any controlled vocabulary. Terms like
   "not_applicable", "unknown", "none", "not_specified", "none_known",
   "unclassified", "other", "not_a_drug", "not_organism_specific" are
@@ -226,7 +233,8 @@ chains from the previous one's finalized schema.
 **Outer loop** (for iteration i = 1 … I):
 1. Load the latest schema from `output/archive/schema_final_K.json` (highest K)
    and set the output run number to K+1
-2. Select 500 new diverse node IDs (fresh random sample)
+2. Select 500 new node IDs using stratified sampling (~167 Disease, ~167
+   Drug/ChemicalSubstance, ~166 other types)
 3. **Phase 1 — Summarize** (Batch API or async, gpt-4o-mini):
    a. Build requests — one summarization request per node
    b. Submit and collect results
@@ -242,19 +250,22 @@ chains from the previous one's finalized schema.
       term frequencies, suggested vocabulary additions; locked fields marked)
    b. Agent loop receives aggregate analysis + current schema (NOT all 500 nodes)
    c. Agent modifies only unlocked controlled vocabularies (not the fields),
-      saves checkpoints, writes refinement summary, and finalizes
+      saves checkpoints, and finalizes
 6. Clean up schema checkpoint intermediates from `output/archive/`
 7. Compare finalized schema to starting schema; update per-field stability
-   counts. Lock fields stable for 3+ consecutive iterations.
-8. Output: `schema_final_(K+1).json`, `refinement_summary_(K+1).md`, and
-   `nodes_(K+1).json` in `output/archive/`
+   counts. Lock fields stable for 5+ consecutive iterations. If **every**
+   controlled-vocabulary field is now locked, break out of the outer loop
+   — no further iteration can modify any vocabulary.
+8. Output: `schema_final_(K+1).json` and `nodes_(K+1).json` in
+   `output/archive/`
 
-**After final iteration**: generate all plots (PCA, node types, term changes).
+**After final iteration** (either `--iterations N` exhausted or early
+termination via all-fields-locked): generate all plots (PCA, node types,
+term changes).
 
 ### Tools the agent has access to (Phase 3 only)
 - `save_schema(controlled_vocabularies, version)` — checkpoint to `output/archive/` (vocabs are merged into base schema automatically)
 - `finalize_schema(controlled_vocabularies)` — saves `schema_final_N.json` in archive, ends session (vocabs merged automatically)
-- `write_summary(content)` — writes `refinement_summary_N.md` in archive
 
 ### Utility functions (used programmatically, not as agent tools)
 - `get_type_distribution()` — understand graph composition
@@ -276,7 +287,8 @@ The final schema_final.json should include:
   - `controlled_vocabulary`: vocabulary name (key in controlled_vocabularies)
   - `applies_to_types`: list of node types, or empty for universal
   - `required`: boolean
-- `controlled_vocabularies`: dict of vocab name → value list (8–30 terms each, max 30)
+- `controlled_vocabularies`: dict of vocab name → value list (8 terms min;
+  max 60 for `molecular_target`, 30 for every other field)
 - `type_specific_fields`: dict of node type → field names
 - `notes`: agent's observations about the domain
 
@@ -289,12 +301,16 @@ belong to multiple categories). Fields that could not be determined are `null`.
   {
     "id": "DOID:0001816",
     "name": "angiosarcoma",
-    "organism": ["Homo sapiens"],
     "tissue_location": ["blood", "soft_tissue"],
     "cell_type": ["endothelial"],
-    "cellular_compartment": null,
     "biological_system": ["cardiovascular"],
-    ...
+    "taxonomic_domain": ["eukarya_animalia_mammal"],
+    "drug_class": null,
+    "developmental_stage": ["adult"],
+    "etiology_class": ["neoplastic"],
+    "temporal_course": ["chronic_progressive"],
+    "molecular_target": ["vegf"],
+    "immune_axis": null
   }
 ]
 ```
@@ -315,7 +331,7 @@ Each value in a list must come from the corresponding controlled vocabulary.
 ### Code conventions
 - Use snake_case everywhere
 - All tool functions return a plain dict (serialized to JSON for the API)
-- Keep tool functions pure — no side effects except `save_schema`, `finalize_schema`, `write_summary`, `write_nodes`
+- Keep tool functions pure — no side effects except `save_schema`, `finalize_schema`, `write_nodes`
 - Hard ceiling of 40 agent turns in Phase 3 to prevent runaway loops
 - Print progress and tool calls to stdout so the run is observable
 - Phase 1 & 2 support two modes: synchronous Batch API or async direct API calls (`--mode batch` or `--mode async`)
@@ -335,9 +351,9 @@ scripts/
     graph_tools.py    # sample_nodes, get_type_distribution, get_predicate_distribution
     batch_tools.py    # build_summarize_request, build_populate_request, submit_batch, poll_batch, download_batch_results
     async_tools.py    # async direct-API alternatives to batch_tools (Phase 1 & 2)
-    schema_tools.py   # load_latest_schema, save_schema, finalize_schema, write_summary, write_nodes, cleanup_checkpoints
+    schema_tools.py   # load_latest_schema, save_schema, finalize_schema, write_nodes, cleanup_checkpoints
 output/
-  archive/            # all versioned outputs (schema_final_N.json, refinement_summary_N.md, nodes_N.json)
+  archive/            # all versioned outputs (schema_final_N.json, nodes_N.json)
   batches/
     batch_ids/        # one JSON file per batch submission (batch_id, phase, metadata)
     inputs/           # JSONL files submitted to the Batch API (phase1_batch_001.jsonl, etc.)

@@ -7,12 +7,15 @@ datasets that each also carry a normal arm, so we keep all three for power and a
 `~disease`. Datasets without both arms after the per-donor filter are dropped to keep
 the design full-rank.
 
-Outputs (mlp_mods/rank_shifts/fibroblast_crohn_paired/):
+Reads the cells from the local 01_expression catalog (NOT a fresh census pull) — the
+Crohn arm from crohn_disease/small_intestine/fibroblast.h5ad and the normal arm from
+normal/small_intestine/fibroblast.h5ad restricted to the three both-arm datasets.
+
+Output (mlp_mods/rank_shifts/fibroblast_crohn_paired/):
   pseudobulk_de.tsv     gene, baseMean, log2FoldChange (crohn-healthy), pvalue, padj,
                         healthy_rank, crohn_rank, rank_shift
-  pulled_fibroblasts.h5ad   raw cells (cached so reruns skip the census pull)
 
-Run with .venv (cellxgene_census + pydeseq2):
+Run with .venv (pydeseq2):
   .venv/bin/python mlp_mods/rank_shifts/de_scripts/fibroblast_crohn.py
 """
 from __future__ import annotations
@@ -24,9 +27,12 @@ import pandas as pd
 import scipy.sparse as sp
 
 HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[2]
 OUT = HERE.parent / "fibroblast_crohn_paired"          # rank_shifts/fibroblast_crohn_paired/
 OUT.mkdir(parents=True, exist_ok=True)
-CACHE = OUT / "pulled_fibroblasts.h5ad"
+EXPR = REPO / "mlp_mods/01_expression"
+CROHN_H5AD = EXPR / "crohn_disease/small_intestine/fibroblast.h5ad"
+NORMAL_H5AD = EXPR / "normal/small_intestine/fibroblast.h5ad"
 
 # The three small-intestine fibroblast datasets that carry BOTH a normal and a Crohn arm
 # (matched protocol/depth); see 01_expression donor/dataset overlap check.
@@ -42,25 +48,18 @@ SANITY = ["ACTB", "PPIA", "GAPDH", "B2M", "PDGFRA", "COL1A1"]
 
 
 def pull():
+    """Load from the local 01_expression catalog (no census pull): Crohn arm as-is,
+    normal arm restricted to the three both-arm datasets; gene symbols from var.feature_name."""
     import anndata as ad
-    if CACHE.exists():
-        print(f"loading cached cells from {CACHE}", flush=True)
-        return ad.read_h5ad(CACHE)
-    import cellxgene_census
-    ds_quoted = ", ".join(f'"{d}"' for d in DATASETS)
-    filt = (f'dataset_id in [{ds_quoted}] and cell_type == "fibroblast" '
-            f'and tissue_general == "small intestine" and is_primary_data == True '
-            f'and disease in ["normal", "Crohn disease"]')
-    print("pulling small-intestine fibroblasts (normal + Crohn) from census ...", flush=True)
-    with cellxgene_census.open_soma(census_version="2025-11-08") as census:
-        a = cellxgene_census.get_anndata(
-            census, organism="Homo sapiens", obs_value_filter=filt, X_name="raw",
-            obs_column_names=["donor_id", "dataset_id", "tissue", "disease", "assay"],
-            var_column_names=["feature_id", "feature_name"])
-    a.var_names = a.var["feature_name"].astype(str).values
+    cr = ad.read_h5ad(CROHN_H5AD)
+    no = ad.read_h5ad(NORMAL_H5AD)
+    no = no[no.obs.dataset_id.astype(str).isin(set(DATASETS))].copy()
+    feat = dict(zip(cr.var_names, cr.var["feature_name"].astype(str)))   # positional id -> symbol
+    a = ad.concat([cr, no], join="inner")
+    a.var_names = [feat[v] for v in a.var_names]
     a.var_names_make_unique()
-    a.write_h5ad(CACHE)
-    print(f"cached {a.n_obs} cells x {a.n_vars} genes -> {CACHE}", flush=True)
+    print(f"loaded local cells: {a.n_obs} ({cr.n_obs} crohn + {no.n_obs} normal[3 datasets]) "
+          f"x {a.n_vars} genes", flush=True)
     return a
 
 

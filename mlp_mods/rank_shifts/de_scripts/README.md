@@ -21,16 +21,20 @@ That `pseudobulk_de.tsv` is the `de_table` a `de_ppi` build consumes (via
 
 | script | dataset(s) | DESeq design | notes |
 |---|---|---|---|
-| `macrophage_crohn.py` | single IBD atlas `a37f857c` (both arms) | `~disease` | the original; small-intestine macrophages |
-| `fibroblast_crohn.py` | 3 small-intestine datasets w/ both arms | `~dataset + disease` | batch covariate across datasets; drops single-arm datasets |
+| `macrophage_crohn.py` | single IBD atlas `a37f857c` (both arms) | `~disease` | the original; small-intestine macrophages; self-pulls |
+| `fibroblast_crohn.py` | 3 small-intestine datasets w/ both arms | `~dataset + disease` | reads local `01_expression` slices (no re-pull); batch covariate |
+| `glial_crohn.py` | 2 small-intestine datasets w/ both arms | `~dataset + disease` | enteric glia (only neural type with a Crohn arm); self-pulls; 6 crohn + 24 normal donors |
 
 ## Adding a build
 
 Copy the closest existing script to `<build>.py`, then set: the dataset id(s) that carry
 **both** a normal and a disease arm of your cell type/tissue, the `cell_type` /
 `tissue_general` / `disease` filter, and the DESeq `design` (`~disease` for one dataset;
-`~dataset + disease` when pooling several for batch control). Output dir + rank-column
-names follow `<build>_paired/` and `<disease-arm>_rank` so `de_ppi/config.py` picks them up.
+`~dataset + disease` when pooling several for batch control; `~disease` again when no
+dataset carries both arms so disease is confounded with dataset — the UNPAIRED case, as
+in the GBM builds). Output dir + rank-column names follow `<build>_paired/` (or
+`<build>_unpaired/` when there's no within-dataset pairing) and `<disease-arm>_rank` so
+`de_ppi/config.py` picks them up.
 
 Run with the `.venv` (needs `cellxgene_census` + `pydeseq2`):
 

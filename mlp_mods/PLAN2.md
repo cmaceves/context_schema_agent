@@ -1,22 +1,34 @@
-# PLAN2.md — Disease state-shift embedding on a PINNACLE PPI
+# PLAN2.md — Disease state-shift influence on a PINNACLE/OmniPath PPI
 
 ## Goal
 
-Embed the proteins of a disease and its healthy reference in a **single shared
-encoder** over a **bidirectional PINNACLE PPI**, where each protein's **outgoing**
-edge weights are set by its **rank shift** between states. The healthy and disease
-embeddings live in one comparable space; the **embedding shift** (and pairwise
-**influence / reach**) is the object of interest — used to ask which proteins'
-network context reorganizes in disease and which nodes can *reach* the
-dysregulated set (control-point / target reasoning).
+For a (cell type, disease), build a directed PPI whose **outgoing** edge weights are
+set by each protein's **rank shift** between the healthy and disease states
+(sender-gated), and score how much each protein **influences the dysregulated set** —
+to ask which nodes can *reach* the dysregulated proteins/metabolites (control-point /
+target reasoning). Influence is computed **analytically** (`P^k` propagation on the
+weighted PPI; see `de_ppi/`), not via a learned embedding.
 
 This is run as a controlled single-cell-type case (macrophage / Crohn's), but the
 build stage is **parameterized by (cell type, disease)** so other builds can be
 added.
 
+> **Status (current).** The shared **R-GCN embedding encoder** that originally produced
+> the embedding shift + Jacobian influence/reach has been **retired** — its code (former
+> stage 4, `04_state_shift_encoder/`) and its inputs (the marker-Wilcoxon per-arm ranks
+> `rank_shifts/<build>/<arm>.tsv` and `02_build_ppi/builds/<build>/node_vocab.tsv`) were
+> removed. Influence/target analysis now runs **analytically** through the **`de_ppi/`
+> pipeline** — a `P^k` propagation on the weighted PPI, no learned embeddings (see the
+> *de_ppi influence pipeline* section below). The encoder sections here are kept for
+> historical context and marked accordingly.
+
 ---
 
-## Course we settled on (the model)
+## Course we settled on (the model) — *historical (retired encoder)*
+
+> This section describes the original **R-GCN encoder** approach, now **retired** (code +
+> inputs removed). The **current** model is the analytic `de_ppi/` influence pipeline
+> documented below. Kept for context.
 
 - **Nodes (per build):** top-Wilcoxon-marker pool per arm (resample recipe:
   100 cells/cluster × 10 trials, keep markers in ≥90%) induced on the **PINNACLE
@@ -57,57 +69,76 @@ added.
 
 ---
 
-## 4-stage layout
+## Layout
 
 ```
 mlp_mods/
 ├── PLAN2.md
-├── 01_expression/            # Stage 1 - fetch single-cell expression (CellxGene pulls)
-│   ├── pull_healthy_macrophage.py, pull_ibd_family.py
-│   └── *.h5ad
-├── 02_build_ppi/             # Stage 2 - build a disease PPI + save Wilcoxon ranks
-│   ├── build_disease_ppi.py        # --build <name>: markers-on-PINNACLE -> vocab; full ranks -> rank_shifts/
-│   ├── builds_manifest.json        # registry of (cell type, disease) builds + knobs
-│   ├── builds/<build>/             # node_vocab.tsv, build_config.json
-│   ├── reference_h5ad/             # body-wide reference for the marker Wilcoxon
+├── 01_expression/            # single-cell expression (CellxGene pulls), reorganized as
+│   ├── <disease>/<tissue_general>/<cell_type>.h5ad   # provenance-explicit slices
+│   ├── pull_ibd_family.py, pull_healthy_macrophage.py, pull_fibroblast_small_intestine.py
+│   ├── reorg_to_disease_tissue.py, slice_manifest.tsv
+├── rank_shifts/
+│   ├── de_scripts/<build>.py        # per-build one-off paired-donor DE (params kept verbatim)
+│   ├── de_scripts/<build>_states.py # cell-STATE split -> per-state DE (thin wrappers, see state_split.py)
+│   ├── de_scripts/state_split.py    # SHARED Leiden state-definition module (disease-blind; replaces marker-argmax)
+│   ├── <build>_paired/              # pseudobulk_de.tsv (+ cached cells) -> de_ppi `de_table`
+│   ├── <build>_states/              # states/<state>/pseudobulk_de.tsv (Leiden states; cell_states.tsv, state_counts.tsv)
+│   └── _stale/                      # superseded outputs (old marker-argmax states, orphan clusters)
+├── 03_opentargets_rebuild/   # disease labels + known drugs (OpenTargets positive/negative)
+├── de_ppi/                   # influence models (analytic P^k AND learned embedding; see sections below)
+│   ├── config.py, build_literature_weighted_influence.py
+│   ├── precompute_expressed_genes.py  # --expressed backbone (detect>=floor) for cell types PINNACLE lacks
+│   ├── embed_influence.py            # single-network GNN encoder + Jacobian influence
+│   ├── joint_embed_influence.py      # SHARED-encoder joint embedding across networks (cross-disease shared space)
+│   ├── influence_analysis/           # plot_phase_*, plot_embedding_clusters (PCA/t-SNE), compare_joint_vs_single
+│   ├── results/<build>/              # per-build analytic network + influence
+│   └── results/<embedding>/          # joint embedding: networks/<tag>/, joint_influence.tsv, embedding_shift.tsv, embeddings.npz
+├── lit_search/               # stage-L LLM-proposed, literature-verified searches
+├── 02_build_ppi/             # (retired-encoder support) builds_manifest.json is SHARED + still
+│   │                         #   read by de_ppi/config.py + lit_search; build_disease_ppi.py +
+│   │                         #   reference_h5ad/ are now orphaned (only fed the removed encoder)
 │   └── _provenance/                # superseded one-off build scripts + intermediates (kept)
-├── 03_opentargets_rebuild/   # Stage 3 - disease labels (OpenTargets positive/negative)
-├── 04_state_shift_encoder/   # Stage 4 - the shared encoder + analyses
-│   ├── gnn_utils.py                # load_vocab(build), make_features, build_relational_edges, EdgeDecoder
-│   ├── weighted_encoder.py         # rank-weighted directed R-GCN
-│   ├── train.py                    # --build <name>: train, write embeddings + embedding_shift
-│   ├── influence.py                # per-arm pairwise influence (Jacobian) + delta
-│   ├── reach_scoring.py            # structural P^k reach to dysregulated set (hops 1-3), targets flagged
-│   ├── influence_reach.py          # encoder-Jacobian reach: sum_g ||dz_g/dx_i||_1 over dysregulated g
-│   ├── plot_shift_scatter.py
-│   ├── plot_rankshift_influence.py # scatter: rank_shift (x) vs influence_on_dysregulated (y)
-│   └── results/<build>/            # per-build outputs
-├── rank_shifts/<build>/      # per-build full Wilcoxon ranks: healthy.tsv, <disease>.tsv
 ├── go_cache/                 # GO annotations for validation (re-fetch; see README)
 └── images/
+
+# REMOVED: 04_state_shift_encoder/ (the R-GCN encoder), 02_build_ppi/builds/ (node_vocab),
+#          rank_shifts/<build>/<arm>.tsv (marker-Wilcoxon ranks) — the embedding pipeline.
 ```
 
 ## Pipeline
 
 ```
-# stage 2: build PPI + ranks for a (cell type, disease)
-.venv/bin/python mlp_mods/02_build_ppi/build_disease_ppi.py --build macrophage_crohn
+# 1. paired-donor DE for a (cell type, disease)  ->  rank_shifts/<build>_paired/pseudobulk_de.tsv
+.venv/bin/python mlp_mods/rank_shifts/de_scripts/macrophage_crohn.py
+#    cell-STATE split (Leiden, disease-blind)    ->  rank_shifts/<build>_states/states/<state>/pseudobulk_de.tsv
+.venv/bin/python mlp_mods/rank_shifts/de_scripts/macrophage_crohn_states.py
 
-# stage 4: encode, influence, reach (su-devenv has torch_geometric)
-su-devenv/bin/python mlp_mods/04_state_shift_encoder/train.py         --build macrophage_crohn
-su-devenv/bin/python mlp_mods/04_state_shift_encoder/influence.py     --build macrophage_crohn
-su-devenv/bin/python mlp_mods/04_state_shift_encoder/reach_scoring.py --build macrophage_crohn
+# 2. per-build network + analytic influence (de_ppi)  ->  de_ppi/results/<build>/
+#    --no-lit for builds without a literature panel; --expressed when PINNACLE lacks the cell type
+.venv/bin/python mlp_mods/de_ppi/build_literature_weighted_influence.py    --build macrophage_crohn
+
+# 3. learned embedding influence (single network)  ->  de_ppi/results/<build>/embedding_influence.tsv
+.venv/bin/python mlp_mods/de_ppi/embed_influence.py --build macrophage_crohn
+
+# 4. JOINT embedding across many networks (cross-disease shared space)
+#    stage each network into results/<embedding>/networks/<tag>/, then:
+.venv/bin/python mlp_mods/de_ppi/joint_embed_influence.py --out-name crohn_alzheimer_ild_embedding
+.venv/bin/python mlp_mods/de_ppi/influence_analysis/plot_embedding_clusters.py --out-name crohn_alzheimer_ild_embedding --method pca   # or tsne
+.venv/bin/python mlp_mods/de_ppi/influence_analysis/plot_phase_joint_boxplot.py --out-name crohn_alzheimer_ild_embedding [--norm percentile|mean] [--layout tag]
 ```
 
-Convention: each build's reference arm is named **`healthy`** (binary sender
-weight); the other arm is the disease arm (rank-drop-gated). Build outputs and
-encoder results are keyed by build name, so multiple diseases/cell types coexist.
+Convention: each build's reference arm is named **`healthy`**; the other is the disease
+arm. Outputs are keyed by build name, so multiple diseases/cell types coexist. (The
+former stage-2 `build_disease_ppi.py` + stage-4 R-GCN encoder are retired; the learned
+embedding in step 3–4 is a NEW, analytic-free encoder built on the de_ppi networks, not the
+old R-GCN.)
 
 ## Open validation thread
-External agreement (does the shift recover known IBD biology?): GO/pathway
-enrichment of high-shift / high-reach genes (go_cache), and correlation against
-an independent IBD intestinal proteomics signature (e.g. PXD001608), with a
-degree-matched / label-permuted null. Targeting = reach + ESM (druggability).
+External agreement (does it recover known IBD biology?): GO/pathway enrichment of
+high-influence genes (go_cache), and correlation against an independent IBD intestinal
+proteomics signature (e.g. PXD001608), with a degree-matched / label-permuted null.
+Targeting = influence + ESM (druggability).
 
 ---
 
@@ -366,3 +397,88 @@ de_ppi/
 - **influence_analysis/** joins the influence ranking to OpenTargets known drugs for the
   build's disease family (per-drug table) and plots influence-percentile by clinical
   phase, with comparison boxes for other macrophage diseases' drug targets.
+
+### Cell-state definition (Leiden, disease-blind) — `rank_shifts/de_scripts/state_split.py`
+All `<build>_states.py` are thin wrappers over one shared module. States are defined by
+**unsupervised Leiden clustering** (normalize → HVG → PCA → kNN → Leiden) on the pooled
+normal+disease cells, **disease-blind**; marker signatures only *name* clusters post hoc
+(cluster → annotate → merge to the annotation label = the state), then per-state pseudobulk
+DESeq2. This replaced the earlier hand-picked-marker **argmax** (which (1) could encode the
+disease signal — gating conditions on the outcome, and (2) forced every cell into a state).
+Disease-skewed clusters with no normal arm are reported **SKIPPED** — their signal is
+**compositional** (a proportion shift), not within-state DE (e.g. the ILD profibrotic-SPP1+
+state, Sjogren immunofibroblast). Needs `leidenalg`+`igraph`.
+
+### Build roster (cross-disease) and backbones
+Builds span four diseases on shared PINNACLE backbones, so the same cell type is comparable
+across diseases:
+- **Crohn** (gut): `macrophage_crohn`, `stem_crohn` (intestinal crypt stem), `fibroblast_crohn` — each + Leiden states.
+- **Alzheimer** (brain): `microglia_alzheimers` (+states), `fibroblast_alzheimers`, `glutamatergic_neuron_alzheimers`.
+- **ILD** (lung): `macrophage_ild` (+states) — the clean, well-powered, paired cross-disease macrophage comparator.
+- Backbone rules: cell-type PINNACLE edgelist when it exists; **`--expressed`** expression-floor backbone
+  (`precompute_expressed_genes.py`, detect≥0.065) when PINNACLE lacks the cell type (Tabula Sapiens has no
+  cortical neuron → glutamatergic neuron uses this); `--no-lit`/no-OT for builds without a literature/drug panel.
+- **PAIRED requirement:** DE needs the normal + disease arms in the *same* dataset(s) with ≥3 donors and ≥20
+  cells/donor *each*. Cross-dataset (unpaired) builds are confounded — `macrophage_atherosclerosis_unpaired`
+  failed this (housekeeping genes significantly "DE", disease ≡ dataset); not usable. Sjogren fibroblast was
+  clean-paired but 0 DE (compositional disease, removed).
+
+### Learned-embedding influence — `embed_influence.py` / `joint_embed_influence.py`
+A learned complement to the analytic P^k reach (a NEW analytic-free encoder on the de_ppi networks —
+**not** the retired R-GCN). A 2-layer weighted-directed message-passing encoder is trained by unsupervised
+link prediction; influence(i) = `‖ d(Σ_{j∈m} z_j) / dx_i ‖` (Jacobian of the dysregulated-set readout).
+The self-loop is gated by the node's sender weight `w(i)`.
+- **`embed_influence.py --build`** → single-network `embedding_influence.tsv`.
+- **`joint_embed_influence.py --out-name`** → ONE shared encoder + input table across many networks
+  (a forward pass per network, loss summed), giving a comparable shared space. Each network is a **tag** =
+  a subdir `results/<out_name>/networks/<tag>/`; tags mix cell types/states/diseases freely. Outputs:
+  `joint_influence.tsv` (`influence_<tag>` per tag), `embedding_shift.tsv` (per-node ‖Z_a−Z_b‖, all pairs),
+  `embeddings.npz`. Absent-in-a-network proteins are masked (NaN influence; excluded from shifts/plots).
+- **`crohn_alzheimer_ild_embedding`** is the current cross-disease shared space: 15 Leiden-state tags across
+  Crohn/Alzheimer/ILD. Plots: `plot_embedding_clusters.py` (PCA/t-SNE, colored by disease / cell type /
+  cell-type-state), `plot_phase_joint_boxplot.py` (drug-target influence by phase + degree-matched-hub null;
+  `--layout tag` for per-disease/cell/state target-vs-hub).
+- **Flattening check** (`compare_joint_vs_single.py`): the joint embedding does NOT flatten per-network
+  structure — vs single-network it has *higher* effective dimensionality and *better* edge reconstruction.
+  Weak disease separation in 2D is a projection effect (cell type dominates the top variance), not flattening.
+
+### Cross-network comparison caveat (raw influence is set-size-confounded)
+Raw influence is a **sum over the dysregulated set**, so its magnitude tracks |set| (empirically
+Spearman ≈ 0.99 across tags). DE-set size in turn scales with donor count (power), so ILD (49 disease
+donors, ~2,000 targets) gives larger raw influence than Crohn macrophage (~6–11 donors, ~8–187 targets) —
+an artifact, not "Crohn drugs work better in ILD." Normalizations each fail one way: **mean** (÷|set|)
+favors small sets; **percentile** is inflated by out-degree (hubs rank high everywhere). The fair
+cross-disease metric is a **degree-matched, size-matched permutation z-score** (the analytic
+`specificity` column): observed influence on the real set vs random degree-matched same-size sets —
+controls both set size (same-size null) and degree (matched). Use that (or per-tag target-vs-degree-matched-hub)
+for cross-disease claims, never raw/mean/percentile alone.
+
+## External UC ingest (Smillie 2019) — for a disease-similarity positive control
+
+**Why:** to show the pipeline can capture *disease similarity* we need a gut-IBD comparator close to
+Crohn (e.g. UC). The only UC in CellxGene census is dataset 19053a82, whose macrophage matrix is
+**defective** — canonical markers absent across ALL arms incl. normal (CD68 ~15%, S100A8/9 0%, TNF 0%,
+C1QA ~1%; verified per-arm), so it cannot represent inflammatory UC macrophages. So we go outside census.
+
+**Source:** Smillie et al. 2019 Cell, *Broad Single Cell Portal SCP259* (the field-standard UC colon
+atlas; healthy + UC donors within one study => within-study paired DE, proper myeloid capture). NOTE:
+GSE116222 is a DIFFERENT paper (Parikh 2019, epithelial) — not Smillie. SCP259 download needs a
+Broad/Google login, so it is NOT auto-pulled.
+
+**Plan / files:**
+1. `de_scripts/pull_smillie_uc.py` (written) — converts SCP259 immune-compartment files
+   (`gene_sorted-Imm.matrix.mtx[.gz]`, `Imm.genes.tsv`, `Imm.barcodes2.tsv`, `all.meta2.txt`) placed in
+   `rank_shifts/macrophage_uc_smillie_paired/_raw/` into `pulled_macrophages.h5ad` (raw counts, symbol
+   var_names, obs `disease`∈{normal,ulcerative colitis}, `donor_id`=Subject, `cell_type`=macrophage),
+   subsetting `Cluster`∈{Macrophages, Inflammatory Monocytes} and mapping `Health` Healthy→normal /
+   Inflamed→UC (Non-inflamed dropped). Prints marker-capture sanity (CD68/S100A8/9/TNF) to confirm it
+   is NOT defective like 19053a82.
+2. Then clone `macrophage_crohn.py` DE (pseudobulk DESeq2, UC vs healthy) -> de_table; add manifest
+   entry `macrophage_uc`; build network (expressed-backbone, rank-weight-all) + per-disease healthy.
+3. Add to an embedding and run the Crohn-vs-UC displacement/heatmap as the disease-similarity test.
+
+**Decisions (resolved):** (a) user downloads SCP259 immune files into
+`rank_shifts/macrophage_uc_smillie_paired/_raw/`; (b) disease arm = **Inflamed vs Healthy** (Non-inflamed
+dropped); (c) macrophage set = **Macrophages + Inflammatory Monocytes**. These match the script defaults
+(`HEALTH_TO_DISEASE`, `MAC_CLUSTERS`). STATUS: blocked on the manual SCP259 download; ingest runs as soon
+as the 4 files are in `_raw/`.
