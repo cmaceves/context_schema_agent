@@ -42,7 +42,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from config import HERE
-from embed_influence import Encoder, BilinearDecoder, WeightHead, DIM, LAYERS, EPOCHS, LR, NEG_RATIO, HOLDOUT, SEED
+from embedding_utils import Encoder, BilinearDecoder, WeightHead, DIM, LAYERS, EPOCHS, LR, NEG_RATIO, HOLDOUT, SEED
 from joint_embed import Net, W_RECON
 sys.path.insert(0, str(Path("mlp_mods/de_ppi") / "influence_analysis"))
 from _layout import tag_celltype, tag_tissue, tag_disease, tag_state

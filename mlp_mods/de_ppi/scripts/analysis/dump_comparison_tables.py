@@ -6,7 +6,7 @@ tables, for BOTH similarity metrics side by side:
 
 Healthy baselines and donor-split controls are EXCLUDED — only real disease-state networks are compared.
 
-Tables written to results/<out_name>/influence_analysis/tables/:
+Tables written to results/<out_name>/tables/:
   factor_combinations.tsv  every (cell type, tissue, disease) same/diff combination -> mean shift, mean cos, n pairs
   factor_flip.tsv          from the all-same baseline, flip ONE factor at a time (cell type | disease | tissue)
   state_<celltype>_<tissue>.tsv   disease x cell-state, TISSUE HELD FIXED, for each (cell type, tissue)
@@ -17,7 +17,7 @@ Reads the two precomputed matrices (run the two heatmap scripts first):
   pair_shift_heatmap_mean.tsv  and  pair_direction_heatmap.tsv
 
 Run:
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/dump_comparison_tables.py \
+  .venv/bin/python mlp_mods/de_ppi/dump_comparison_tables.py \
       --out-name crohn_alzheimer_ild_uc_embedding_expressed
 """
 from __future__ import annotations
@@ -63,13 +63,25 @@ def main(out_name) -> int:
     skipped = []
 
     # ---- Table 1: every (cell type, tissue, disease) same/diff combination ----
-    rows = []
-    for a, b in combinations(tags, 2):
-        rows.append((tag_celltype(a) == tag_celltype(b), tag_tissue(a) == tag_tissue(b),
-                     tag_disease(a) == tag_disease(b), tag_state(a) == tag_state(b),
-                     float(S.loc[a, b]), float(D.loc[a, b])))
-    df = pd.DataFrame(rows, columns=["ct_same", "tissue_same", "disease_same", "state_same", "shift", "cos"])
     sm = lambda v: "same" if v else "diff"
+    rows = []
+    pair_rows = []                                    # per-pair detail (one row per network pair)
+    for a, b in combinations(tags, 2):
+        ct_s, ti_s = tag_celltype(a) == tag_celltype(b), tag_tissue(a) == tag_tissue(b)
+        dz_s, st_s = tag_disease(a) == tag_disease(b), tag_state(a) == tag_state(b)
+        sh, co = float(S.loc[a, b]), float(D.loc[a, b])
+        rows.append((ct_s, ti_s, dz_s, st_s, sh, co))
+        pair_rows.append((a, b, sm(ct_s), sm(ti_s), sm(dz_s), sm(st_s),
+                          round(sh, 3), round(co, 3)))
+    df = pd.DataFrame(rows, columns=["ct_same", "tissue_same", "disease_same", "state_same", "shift", "cos"])
+
+    # ---- Table 1b: per-pair detail behind factor_combinations (every pair, all factors flagged) ----
+    pairs_df = pd.DataFrame(pair_rows, columns=[
+        "network_a", "network_b", "cell_type", "tissue", "disease", "cell_state",
+        "avg_magnitude_change", "avg_direction_cos"]).sort_values(
+        ["disease", "cell_type", "tissue", "cell_state", "avg_direction_cos"],
+        ascending=[True, True, True, True, False]).reset_index(drop=True)
+    pairs_df.to_csv(out / "factor_combinations_pairs.tsv", sep="\t", index=False)
     combo = (df.groupby(["ct_same", "tissue_same", "disease_same", "state_same"])
              .agg(avg_magnitude_change=("shift", "mean"), avg_direction_cos=("cos", "mean"),
                   n_pairs=("shift", "size"))
@@ -133,6 +145,8 @@ def main(out_name) -> int:
              "", f"networks compared ({len(tags)}, healthy + donor-split controls EXCLUDED):",
              "  " + ", ".join(tags), "",
              "factor_combinations.tsv : mean shift & cos for every same/diff combination of cell type, tissue, disease",
+             "factor_combinations_pairs.tsv : per-pair detail behind factor_combinations -- one row per network pair",
+             "                          (network_a, network_b, each factor flagged same/diff, both metrics)",
              "factor_flip.tsv         : change in shift & cos when ONE factor is flipped from the all-same baseline",
              "state_<ct>_<tissue>.tsv : disease x cell-state with TISSUE FIXED (only where >=2 diseases share the tissue;",
              "                          states are marker-harmonized by state_split.py, so labels are comparable)", ""]
@@ -144,7 +158,9 @@ def main(out_name) -> int:
     (out / "README.txt").write_text("\n".join(lines) + "\n")
 
     print(f"wrote tables to {out}/\n")
-    print("== factor_combinations.tsv =="); print(combo.to_string(index=False))
+    print(f"== factor_combinations_pairs.tsv ({len(pairs_df)} pairs) ==")
+    print(pairs_df.to_string(index=False))
+    print("\n== factor_combinations.tsv =="); print(combo.to_string(index=False))
     print("\n== factor_flip.tsv =="); print(flip.to_string(index=False))
     for ct, ti, dz, fn in made:
         print(f"\n== {fn}  ({ct}/{ti}: {' vs '.join(dz)}) ==")

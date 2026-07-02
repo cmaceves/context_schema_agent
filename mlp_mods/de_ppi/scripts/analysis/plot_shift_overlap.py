@@ -9,12 +9,12 @@ classify each protein by whether it is a top mover in A, B, or both, and quantif
 "shared disease axis" test: do two different diseases' macrophage activation axes move the same
 proteins?
 
-Outputs (results/<out_name>/influence_analysis/):
+Outputs (results/<out_name>/):
   shift_overlap_<A1>_<A2>__VS__<B1>_<B2>.png   (scatter + shared-mover bars)
   shift_overlap_<...>.tsv                        (per-protein shift_a, shift_b, func_class)
 
 Run:
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/plot_shift_overlap.py \
+  .venv/bin/python mlp_mods/de_ppi/plot_shift_overlap.py \
       --out-name crohn_alzheimer_ild_embedding \
       --pair-a crohn_mac_resident crohn_mac_inflammatory \
       --pair-b ild_macrophage_monocyte_derived ild_macrophage_interstitial --topk 30

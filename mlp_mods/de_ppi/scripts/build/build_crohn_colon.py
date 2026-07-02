@@ -22,7 +22,7 @@ import json, sys
 from pathlib import Path
 import numpy as np, pandas as pd, scipy.sparse as sp, anndata as ad
 sys.path.insert(0, "mlp_mods/de_ppi")
-import build_literature_weighted_influence as B
+import build_ppi_network as B
 
 HERE = Path("mlp_mods/de_ppi"); RS = Path("mlp_mods/rank_shifts")
 NET = HERE / "results/crohn_alzheimer_ild_uc_embedding_expressed/networks"
@@ -82,7 +82,7 @@ def main():
 
     for state in states:
         build = f"macrophage_crohn_colon_{state}"
-        B.main(build, expressed_backbone=True, rank_weight_all=True,
+        B.main(build, expressed_backbone=True, rank_weight_all=False, neutral_weights=True,
                net_out=str(NET / f"crohn_colon_mac_{state}"), expr_genes_path=str(EXPR_DIR / f"{build}.txt"))
     for state in emergent:
         build_neutral(a, f"crohn_colon_mac_{state}", ((a.obs.state == state) & (a.obs.disease.astype(str) == "Crohn disease")).values)

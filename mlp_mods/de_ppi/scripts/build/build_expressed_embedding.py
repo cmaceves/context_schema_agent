@@ -22,7 +22,7 @@ for _sd in ("build", "build/controls", "embed", "analysis"):
 import shutil
 from pathlib import Path
 
-import build_literature_weighted_influence as B
+import build_ppi_network as B
 
 HERE = Path("mlp_mods/de_ppi")
 EXPR_DIR = HERE / "expressed_genes_threshold"

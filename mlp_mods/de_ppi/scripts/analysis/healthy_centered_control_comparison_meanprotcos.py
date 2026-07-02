@@ -3,7 +3,7 @@ the healthy reference protein embedding (default healthy_pinnacle_macrophage) in
 MEAN. MACROPHAGE control pairs only (the origin is macrophage): crohn_mac donor_split + between_study.
   r_X[p]=Z_X[p]-Z_ref[p];  mean_prot_cos(A,B)=mean_p cos(r_A,r_B) over proteins present in A,B AND ref.
 Output: tables/healthy_centered_control_comparison_meanprotcos_summary.tsv (+ per-pair).
-Run: .venv/bin/python mlp_mods/de_ppi/influence_analysis/dump_healthy_centered_control_comparison_meanprotcos.py
+Run: .venv/bin/python mlp_mods/de_ppi/dump_healthy_centered_control_comparison_meanprotcos.py
 """
 from __future__ import annotations
 

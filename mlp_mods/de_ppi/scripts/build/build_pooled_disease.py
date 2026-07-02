@@ -23,7 +23,7 @@ import json, sys
 from pathlib import Path
 import numpy as np, pandas as pd, scipy.sparse as sp, anndata as ad
 sys.path.insert(0, "mlp_mods/de_ppi"); sys.path.insert(0, "mlp_mods/rank_shifts/de_scripts")
-import build_literature_weighted_influence as B
+import build_ppi_network as B
 import state_split
 
 HERE = Path("mlp_mods/de_ppi"); RS = Path("mlp_mods/rank_shifts")
@@ -105,7 +105,7 @@ def main():
                 "arms": [{"name":"healthy","h5ad":str(cfg["studies"][0][0]),"disease_filter":None,"target_label":"healthy"},
                          {"name":cfg["lab"],"h5ad":str(cfg["studies"][0][0]),"disease_filter":cfg["disease"],"target_label":"disease"}]}
             json.dump(man, open(MANIFEST,"w"), indent=1)
-            B.main(build, expressed_backbone=True, rank_weight_all=True,
+            B.main(build, expressed_backbone=True, rank_weight_all=False, neutral_weights=True,
                    net_out=str(NET/tag), expr_genes_path=str(EXPR_DIR/f"{build}.txt"))
             print(f"  {tag:34s} pooled {len(per_de)} studies, union={len(union_expr)} proteins, {len(allg)} ranked", flush=True)
     print("\nDONE", flush=True)

@@ -47,7 +47,7 @@ import torch
 import torch.nn.functional as F
 
 from config import HERE
-from embed_influence import (Encoder, BilinearDecoder, WeightHead, build_operator,
+from embedding_utils import (Encoder, BilinearDecoder, WeightHead, build_operator,
                              jacobian_influence, DIM, LAYERS, EPOCHS, LR, NEG_RATIO, HOLDOUT, SEED)
 
 W_RECON = 1.0     # weight of the edge-weight reconstruction loss (ties embedding to rank-shift weights)
@@ -64,7 +64,7 @@ def discover_tags(out_name: str) -> list[str]:
 class Net:
     """One network (tag) mapped onto the shared node universe."""
 
-    def __init__(self, tag: str, idx: dict[str, int], device, ndir: Path):
+    def __init__(self, tag: str, idx: dict[str, int], device, ndir: Path, self_loops: bool = True):
         nodes = pd.read_csv(ndir / "network_nodes.tsv", sep="\t", keep_default_na=False)
         edges = pd.read_csv(ndir / "network_edges.tsv", sep="\t", keep_default_na=False)
         self.tag = tag
@@ -76,8 +76,13 @@ class Net:
         # sender weights placed on the universe (absent nodes -> 1.0, the neutral self-loop default)
         sw = np.ones(n)
         sw[node_pos] = nodes["sender_weight"].astype(float).to_numpy()
-        self.A = build_operator(edges, idx, device, self_weight=sw)
+        self.A = build_operator(edges, idx, device, self_weight=sw, self_loops=self_loops)
         self.w_feat = torch.tensor(np.log(sw), dtype=torch.float32, device=device).unsqueeze(1)
+        # per-node log-expression placed on the universe (absent nodes -> 0); used as input when use_expr_feat
+        expr = np.zeros(n)
+        if "expression" in nodes.columns:
+            expr[node_pos] = nodes["expression"].astype(float).to_numpy()
+        self.expr = torch.tensor(expr, dtype=torch.float32, device=device).unsqueeze(1)
         self.pos_src = edges["source"].map(idx).to_numpy()
         self.pos_dst = edges["target"].map(idx).to_numpy()
         self.pos_w = torch.tensor(np.log(edges["weight"].astype(float).to_numpy()),
@@ -89,7 +94,7 @@ class Net:
 
 
 def main(out_name, tags, dim, layers, epochs, lr, neg_ratio, holdout, seed,
-         mean_readout=False, res_name=None) -> int:
+         mean_readout=False, res_name=None, no_self_loops=False, no_self_lin=False, expr_feat=False) -> int:
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -108,10 +113,13 @@ def main(out_name, tags, dim, layers, epochs, lr, neg_ratio, holdout, seed,
     order = list(node_type)
     idx = {g: i for i, g in enumerate(order)}
     N = len(order)
-    nets = [Net(t, idx, device, root / t) for t in tags]
-    print(f"universe N={N} | tags: {', '.join(tags)} | device={device}", flush=True)
+    nets = [Net(t, idx, device, root / t, self_loops=not no_self_loops) for t in tags]
+    print(f"universe N={N} | tags: {', '.join(tags)} | device={device} | "
+          f"self_loops={not no_self_loops}", flush=True)
 
-    model = Encoder(N, dim, layers).to(device)
+    model = Encoder(N, dim, layers, use_self_lin=not no_self_lin, use_expr_feat=expr_feat).to(device)
+    print(f"encoder: self_lin={'OFF (ablated)' if no_self_lin else 'on'} | "
+          f"input={'log-expression (replaces identity)' if expr_feat else 'learned identity'}", flush=True)
     dec = BilinearDecoder(dim).to(device)
     whead = WeightHead(dim).to(device)
     opt = torch.optim.Adam(list(model.parameters()) + list(dec.parameters()) + list(whead.parameters()), lr=lr)
@@ -129,7 +137,7 @@ def main(out_name, tags, dim, layers, epochs, lr, neg_ratio, holdout, seed,
         model.train(); opt.zero_grad()
         loss = torch.tensor(0.0, device=device); mse_sum = 0.0
         for net, (keep, _) in zip(nets, splits):
-            z = model(net.A, w_feat=net.w_feat)
+            z = model(net.A, w_feat=net.w_feat, node_feat=net.expr)
             ts = torch.tensor(net.pos_src[keep], device=device)
             td = torch.tensor(net.pos_dst[keep], device=device)
             ns = ts.repeat(neg_ratio)
@@ -152,7 +160,7 @@ def main(out_name, tags, dim, layers, epochs, lr, neg_ratio, holdout, seed,
         for net, (_, hold) in zip(nets, splits):
             if len(hold) == 0:
                 continue
-            z = model(net.A, w_feat=net.w_feat)
+            z = model(net.A, w_feat=net.w_feat, node_feat=net.expr)
             hs = torch.tensor(net.pos_src[hold], device=device)
             hd = torch.tensor(net.pos_dst[hold], device=device)
             ndst = torch.randint(0, N, (len(hd),), device=device)
@@ -164,23 +172,11 @@ def main(out_name, tags, dim, layers, epochs, lr, neg_ratio, holdout, seed,
     # per-network embeddings Z
     model.eval()
     with torch.no_grad():
-        Z = np.stack([model(net.A, w_feat=net.w_feat).detach().cpu().numpy() for net in nets])  # (T, N, dim)
+        Z = np.stack([model(net.A, w_feat=net.w_feat, node_feat=net.expr).detach().cpu().numpy() for net in nets])  # (T, N, dim)
     present = np.stack([net.present for net in nets])                                            # (T, N)
 
-    # per-network Jacobian influence on each net's own dysregulated set
-    print(f"computing per-network Jacobian influence ({'mean over set' if mean_readout else 'sum over set'})...",
-          flush=True)
-    out = pd.DataFrame({"node_id": order, "node_type": [node_type[g] for g in order]})
-    for ti, net in enumerate(nets):
-        infl = jacobian_influence(net.A, model, net.target_idx, device, net.w_feat)
-        if mean_readout and net.n_target:
-            infl = infl / net.n_target
-        out[f"present_{net.tag}"] = present[ti]
-        out[f"influence_{net.tag}"] = infl
-        out[f"influence_{net.tag}_rank"] = pd.Series(infl).rank(ascending=False, method="first").astype("Int64")
-
     res = HERE / "results" / (res_name or out_name); res.mkdir(parents=True, exist_ok=True)
-    out.to_csv(res / "joint_influence.tsv", sep="\t", index=False)
+    # (Jacobian influence readout deprecated/removed.)
 
     # per-node embedding shift between every tag pair (euclidean, where present in both)
     sh = pd.DataFrame({"node_id": order})
@@ -201,8 +197,12 @@ def main(out_name, tags, dim, layers, epochs, lr, neg_ratio, holdout, seed,
                         node_type=np.array([node_type[g] for g in order], dtype=object),
                         tags=np.array([net.tag for net in nets], dtype=object),
                         Z=Z, present=present)
-    print(f"\nwrote {res/'joint_influence.tsv'}\nwrote {res/'embedding_shift.tsv'}\nwrote {res/'embeddings.npz'}",
-          flush=True)
+    torch.save({"encoder": model.state_dict(), "decoder": dec.state_dict(),
+                "weight_head": whead.state_dict(),
+                "config": {"N": N, "dim": dim, "layers": layers, "self_loops": not no_self_loops,
+                           "use_self_lin": not no_self_lin, "use_expr_feat": expr_feat},
+                "node_id": list(order)}, res / "encoder.pt")
+    print(f"\nwrote {res/'embedding_shift.tsv'}\nwrote {res/'embeddings.npz'}\nwrote {res/'encoder.pt'}", flush=True)
     return 0
 
 
@@ -221,6 +221,15 @@ if __name__ == "__main__":
                     help="divide each network's influence by its own dysregulated-set size (mean readout) instead of sum")
     ap.add_argument("--res-name", default=None,
                     help="write outputs to results/<res_name>/ (networks still READ from out_name; for variants)")
+    ap.add_argument("--no-self-loops", action="store_true",
+                    help="ABLATION: drop operator self-loops; embeddings built only from in-neighbour messages "
+                         "(+ residual self_lin). saved in encoder.pt config so inference matches.")
+    ap.add_argument("--no-self-lin", action="store_true",
+                    help="ABLATION: drop the residual self_lin (W_self) path; node positions come only from "
+                         "neighbour messages (+ self-loop in A). saved in encoder.pt config so inference matches.")
+    ap.add_argument("--expr-feat", action="store_true",
+                    help="input feature = per-network log-expression (replaces the learned identity table); "
+                         "node_nodes.tsv must carry an 'expression' column. saved in config so inference matches.")
     a = ap.parse_args()
-    raise SystemExit(main(a.out_name, a.tags, a.dim, a.layers, a.epochs, a.lr,
-                          a.neg_ratio, a.holdout, a.seed, a.mean_readout, a.res_name))
+    raise SystemExit(main(a.out_name, a.tags, a.dim, a.layers, a.epochs, a.lr, a.neg_ratio, a.holdout,
+                          a.seed, a.mean_readout, a.res_name, a.no_self_loops, a.no_self_lin, a.expr_feat))

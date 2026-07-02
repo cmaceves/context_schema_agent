@@ -1,7 +1,7 @@
-"""(disease, cell type) PPI influence with LITERATURE + DE-curated edge weights.
+"""(disease, cell type) PPI network assembly with LITERATURE + DE-curated edge weights.
 
 Parameterized by --build <name> (resolved via config.load_build from
-02_build_ppi/builds_manifest.json). Outputs go to de_ppi/results/<build>/.
+02_build_ppi/builds_manifest.json). Outputs go to de_ppi/results/<build>/networks/.
 
   - Node set = PINNACLE cell-type proteins  UNION  DE genes (padj<0.05)  UNION  the
     literature-search genes. OmniPath-orphans are dropped unless they reach a metabolite.
@@ -10,22 +10,15 @@ Parameterized by --build <name> (resolved via config.load_build from
             w = min(exp(-(disease_rank - ref_rank)/tau), wmax)   (tau=4000, wmax=5)
       * literature genes (not DE): elevated -> 2.0, suppressed -> 0.5.
     PINNACLE backbone / non-DE / metabolite sinks broadcast at 1.0.
-  - Target set = DE genes  UNION  literature markers  UNION  metabolite sinks
-    (HMDB disease metabolites UNION literature-search metabolites).
-  - influence(i) = sum_{k=0..3} (P^k @ m),  P[i,j] = w(i)/Z(j). The k=0 (self-loop)
-    term credits a node for being itself in the dysregulated target set m.
+  - Metabolite sinks = HMDB disease metabolites UNION literature-search metabolites,
+    wired in via MIND protein->metabolite edges.
 
-Outputs (de_ppi/results/<build>/): P3_influence.tsv, networks/network_nodes.tsv,
-networks/network_edges.tsv. Prints the OpenTargets-positive target table.
-
-P3_influence.tsv is ranked by (unsigned) reach (`rank`). It also carries `general_influence`
-(reach to all nodes = hubness), `specificity` (degree-matched permutation z-score), and the
-signed `effect`/`effect_propagated` (signature-reversal via the signed operator P_sig).
-CAVEAT: signed multi-hop propagation is fragile to incomplete sign coverage (a signless edge
-zeroes a path); the build prints signed-edge coverage so this can be judged.
+Outputs (de_ppi/results/<build>/networks/, or --net-out): network_nodes.tsv,
+network_edges.tsv. These manifests are consumed by the embedding/influence code
+(embed/joint_embed.py, etc.).
 
 Run with .venv:
-  .venv/bin/python mlp_mods/de_ppi/build_literature_weighted_influence.py --build macrophage_crohn
+  .venv/bin/python mlp_mods/de_ppi/build_ppi_network.py --build macrophage_crohn
 """
 from __future__ import annotations
 
@@ -37,14 +30,12 @@ for _sd in ("build", "build/controls", "embed", "analysis"):
         _sys.path.insert(0, _p)
 
 
-import argparse, csv, json
-from collections import defaultdict
+import argparse, csv
 from pathlib import Path
-import numpy as np, pandas as pd, scipy.sparse as sp
+import numpy as np, pandas as pd
 
 from config import load_build
 
-HOPS = 3
 W_UP, W_DOWN, W_BASE = 2.0, 0.5, 1.0
 TAU, WMAX = 4000.0, 5.0
 
@@ -57,20 +48,19 @@ def main(build: str, lit_only: bool = False, rank_weight_all: bool = False,
     expr_path = Path(expr_genes_path) if expr_genes_path else cfg.expressed_genes
     if net_out:                                        # redirect all outputs to a custom dir
         nd = Path(net_out); nd.mkdir(parents=True, exist_ok=True)
-        out_p3, out_nodes, out_edges = nd / "P3_influence.tsv", nd / "network_nodes.tsv", nd / "network_edges.tsv"
+        out_nodes, out_edges = nd / "network_nodes.tsv", nd / "network_edges.tsv"
     else:
         cfg.networks_dir.mkdir(parents=True, exist_ok=True)   # only create canonical dir when not redirected
-        out_p3, out_nodes, out_edges = cfg.p3_influence, cfg.network_nodes, cfg.network_edges
+        out_nodes, out_edges = cfg.network_nodes, cfg.network_edges
 
     # literature markers -> direction (majority vote if conflict). Skipped when --no-lit, or when
     # the build has no literature table (e.g. stem cells: no lit_search panel) -> DE-only.
     direction, lit_up, lit_down = {}, set(), set()
     if no_lit:
-        print("no-lit: literature genes EXCLUDED (node set, target set m, sender weights, and "
-              "Effect signature all use DE only)", flush=True)
+        print("no-lit: literature genes EXCLUDED (node set, sender weights all use DE only)", flush=True)
     elif not cfg.lit_genes.exists():
         print(f"no literature gene table ({cfg.lit_genes.name} absent) -> DE-only "
-              "node set / targets / sender weights", flush=True)
+              "node set / sender weights", flush=True)
     else:
         lit = pd.read_csv(cfg.lit_genes, sep="\t")
         for g, sub in lit.groupby("entity"):
@@ -82,7 +72,7 @@ def main(build: str, lit_only: bool = False, rank_weight_all: bool = False,
 
     if lit_only:                                       # e.g. GBM: DE is batch-confounded -> exclude it
         de, dysreg = None, set()
-        print("lit-only: DE genes EXCLUDED from node set, targets, and sender weights", flush=True)
+        print("lit-only: DE genes EXCLUDED from node set and sender weights", flush=True)
     else:
         de = pd.read_csv(cfg.de_table, sep="\t").set_index("gene")
         dysreg = set(de[de.padj < 0.05].index)
@@ -93,12 +83,14 @@ def main(build: str, lit_only: bool = False, rank_weight_all: bool = False,
         ppi_nodes = set()                              # backbone comes from DE + --expressed proteins
         print(f"no cell-type PPI ({cfg.celltype_ppi.name} absent) -> backbone = DE "
               "(+ --expressed) proteins, wired by OmniPath", flush=True)
+    pinnacle_nodes = set(ppi_nodes)                    # true PINNACLE membership for the 'pinnacle' source tag
     if expressed_backbone:                             # REPLACE backbone with the state's expressed set
         exp0 = {g.strip() for g in expr_path.read_text().split() if g.strip()}
         print(f"expressed-backbone: backbone REPLACED by {len(exp0)} expressed proteins "
               f"(detect>=floor) from {expr_path.name}; PINNACLE dropped "
               f"(removes {len(ppi_nodes - exp0)} non-expressed, adds {len(exp0 - ppi_nodes)} expressed)", flush=True)
         ppi_nodes = set(exp0)
+        pinnacle_nodes = set()                         # PINNACLE dropped -> no node carries the 'pinnacle' tag
         expressed = True                               # also tag 'expressed' + union below (no-op)
     node_set = ppi_nodes | dysreg | set(direction)     # + literature markers
     exp: set = set()
@@ -176,119 +168,18 @@ def main(build: str, lit_only: bool = False, rank_weight_all: bool = False,
         elif g in lit_down:
             w[i] = W_DOWN                                          # literature suppressed -> 0.5
     dir_w = w.copy()                                               # direction sign is read off this (preserved even if weights neutralized)
-    if neutral_weights:                                            # drop the rank-shift MAGNITUDE from propagation
-        w = np.full(N, W_BASE)                                     # edge/self weights = 1.0 (topology-only); dysregulated SET still defined via dir_w
+    if neutral_weights:                                           # drop the rank-shift MAGNITUDE from edges
+        w = np.full(N, W_BASE)                                    # edge/self weights = 1.0 (topology-only)
         print("neutral-weights: edge/self weights set to 1.0 (no rank-shift magnitude); "
-              "direction / dysregulated set preserved", flush=True)
-
-    src = list(op.src.map(pidx)) + [pidx[s] for s, _ in pm]
-    dst = list(op.dst.map(pidx)) + [midx[c] for _, c in pm]
-    src, dst = np.array(src), np.array(dst)
-    P = sp.coo_matrix((w[src], (src, dst)), shape=(N, N)).tocsc()
-    Z = np.asarray(P.sum(0)).ravel()
-    invZ = sp.diags(np.divide(1.0, Z, out=np.zeros_like(Z), where=Z > 0))
-    P = (P @ invZ).tocsr()
-
-    # target = DE-dysregulated  ∪  literature markers  ∪  metabolites
-    target_genes = (dysreg | set(direction))
-    m = np.zeros(N)
-    for g, i in pidx.items():
-        if g in target_genes: m[i] = 1.0
-    for c in met: m[midx[c]] = 1.0
-    print(f"target set: {int(m[:np_].sum())} gene targets (DE ∪ literature) + {nm} metabolites", flush=True)
-
-    # influence(i) = sum_{k=0..3} (P^k @ m). The k=0 (self-loop / identity) term credits a
-    # node for being itself in the dysregulated target set -- targeting a dysregulated node
-    # directly perturbs the set even if it broadcasts little (e.g. ITGB7). Reach-only
-    # influence is recoverable as (influence - is_target) for protein rows.
-    infl = m.copy()                      # k=0 self-loop
-    v = m.copy()
-    for _ in range(HOPS):
-        v = P @ v; infl += v
-
-    # general_influence (reach to ALL nodes = hubness) + degree-matched permutation specificity
-    gen = np.ones(N); vg = np.ones(N)
-    for _ in range(HOPS):
-        vg = P @ vg; gen += vg
-    B = 1000
-    indeg = np.bincount(dst, minlength=N).astype(float)    # incoming-edge count (target reachability)
-    binid = pd.qcut(pd.Series(indeg).rank(method="first"), q=20, labels=False).to_numpy()
-    pool = defaultdict(list)
-    for j in range(N):
-        pool[binid[j]].append(j)
-    pool = {b: np.array(v) for b, v in pool.items()}
-    m_idx = np.where(m > 0)[0]
-    rng = np.random.default_rng(0)
-    Mn = np.zeros((N, B))
-    for b in range(B):
-        for mi in m_idx:
-            Mn[rng.choice(pool[binid[mi]]), b] = 1.0        # one random same-degree-bin node per m member
-    acc = Mn.copy(); Vn = Mn.copy()
-    for _ in range(HOPS):
-        Vn = P @ Vn; acc += Vn
-    mu, sd = acc.mean(1), acc.std(1)
-    spec = np.divide(infl - mu, sd, out=np.zeros(N), where=sd > 0)
-
-    # --- signed Effect (signature-reversal): Effect(p) = sum_{k=0..K} (P_sig^k @ sig) ---
-    # P_sig = column-normalized operator carrying OmniPath activation/inhibition signs (MIND
-    # metabolite edges neutral=0). sig = signed disease magnitude (DE: log2FC; literature:
-    # +/- median|log2FC|). effect_propagated drops the k=0 self term. CAVEAT: signed multi-hop
-    # propagation is fragile to incomplete sign coverage (a signless edge zeroes a path).
-    sign = np.array(list(op.sign.astype(float)) + [0.0] * len(pm))
-    P_sig = (sp.coo_matrix((sign * w[src], (src, dst)), shape=(N, N)).tocsc() @ invZ).tocsr()
-    de_lfc = (de.loc[[g for g in dysreg if g in de.index], "log2FoldChange"]
-              if (not lit_only and len(dysreg)) else pd.Series(dtype=float))
-    mbar = float(np.nanmedian(np.abs(de_lfc))) if len(de_lfc) else 1.0
-    sigv = np.zeros(N)
-    for g, i in pidx.items():
-        if (not lit_only) and g in dysreg and np.isfinite(de.loc[g, "log2FoldChange"]):
-            sigv[i] = float(de.loc[g, "log2FoldChange"])
-        elif g in lit_up:
-            sigv[i] = mbar
-        elif g in lit_down:
-            sigv[i] = -mbar
-    effect = sigv.copy(); ve = sigv.copy()
-    for _ in range(HOPS):
-        ve = P_sig @ ve; effect += ve
-    effect_prop = effect - sigv
-    fs = float((sign != 0).sum()) / len(sign) if len(sign) else 0.0
-    print(f"signed-edge coverage: {fs:.1%} of {len(sign)} edges", flush=True)
-
-    def wlabel(g):
-        return "up(2.0)" if g in lit_up else "down(0.5)" if g in lit_down else "1.0"
-    rows = [{"protein": g, "influence": float(infl[i]), "general_influence": float(gen[i]),
-             "specificity": round(float(spec[i]), 3),
-             "sender_weight": w[i], "lit_marker": wlabel(g), "is_target": int(g in target_genes)}
-            for g, i in pidx.items()]
-    df = pd.DataFrame(rows).sort_values("influence", ascending=False).reset_index(drop=True)
-    df["rank"] = df.index + 1                                   # ranking on (unsigned) reach
-    df["specificity_rank"] = df.specificity.rank(ascending=False).astype(int)
-    df["effect"] = df.protein.map({g: round(float(effect[i]), 4) for g, i in pidx.items()})
-    df["effect_propagated"] = df.protein.map({g: round(float(effect_prop[i]), 4) for g, i in pidx.items()})
-    df["effect_rank"] = df.effect.rank(ascending=False).astype(int)
-    df.to_csv(out_p3, sep="\t", index=False)
-
-    # OpenTargets-positive target table (only if this build has an OpenTargets pull)
-    print(f"\nN={N} | wrote {out_p3}", flush=True)
-    if cfg.opentargets_positive and cfg.opentargets_positive.exists() and cfg.ot_efo:
-        targets = set(json.load(open(cfg.opentargets_positive))[cfg.ot_efo][cfg.ot_celltype])
-        t = df[df.protein.isin(targets)].copy()
-        t["pctile"] = (t["rank"] / N * 100).round(1)
-        t = t[["rank", "pctile", "protein", "influence", "sender_weight", "lit_marker"]].sort_values("rank")
-        print(f"\n=== {cfg.disease} targets ranked by influence ===")
-        print(t.round(3).to_string(index=False))
-        print(f"\nbest #{int(t['rank'].min())} | median #{int(t['rank'].median())} (top {100*t['rank'].median()/N:.0f}%)")
-    else:
-        print("(OpenTargets-positive target table skipped — no OpenTargets pull for this build)", flush=True)
+              "direction preserved", flush=True)
 
     # ---- network manifests: all entities + the edge list ----
-    mac_nodes = ppi_nodes                              # PINNACLE-context nodes (empty if no backbone)
+    mac_nodes = pinnacle_nodes                         # true PINNACLE-context nodes (empty under --expressed-backbone)
 
     def sender_attr(node):
         """Edge weight is sender-gated from the node's w (only DE genes are != 1.0; all 1.0 under
         --neutral-weights). Direction is read off dir_w (the rank-shift sign), which is preserved
-        even when propagation weights are neutralized, so the dysregulated set stays defined.
-        Metabolites are sinks (no pidx entry) -> 1.0."""
+        even when edge weights are neutralized. Metabolites are sinks (no pidx entry) -> 1.0."""
         i = pidx.get(node)
         wt = W_BASE if i is None else float(w[i])
         dw = W_BASE if i is None else float(dir_w[i])
@@ -327,16 +218,15 @@ def main(build: str, lit_only: bool = False, rank_weight_all: bool = False,
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="literature+DE-weighted (disease, cell type) PPI influence")
+    ap = argparse.ArgumentParser(description="literature+DE-weighted (disease, cell type) PPI network assembly")
     ap.add_argument("--build", default="macrophage_crohn")
     ap.add_argument("--lit-only", action="store_true",
-                    help="use ONLY literature genes/metabolites as the dysregulated set (exclude DE)")
+                    help="use ONLY literature genes/metabolites (exclude DE from node set + weights)")
     ap.add_argument("--rank-weight-all", action="store_true",
                     help="apply the rank-change sender weight to ALL genes with finite ranks, "
                          "not just DE-significant ones")
     ap.add_argument("--no-lit", action="store_true",
-                    help="EXCLUDE literature genes from the node set, target set, weights, and "
-                         "Effect signature (use DE only)")
+                    help="EXCLUDE literature genes from the node set and weights (use DE only)")
     ap.add_argument("--expressed", action="store_true",
                     help="UNION state-expressed proteins (detect>=floor, ambient-blacklisted) into node set")
     ap.add_argument("--indra", action="store_true",
@@ -345,7 +235,7 @@ if __name__ == "__main__":
                     help="REPLACE the PINNACLE backbone with the state's expressed set "
                          "(detect>=floor): removes non-expressed backbone proteins, adds expressed ones")
     ap.add_argument("--net-out", default=None,
-                    help="write P3_influence/network_nodes/network_edges to this dir instead of "
+                    help="write network_nodes/network_edges to this dir instead of "
                          "results/<build>/networks (does not clobber the canonical per-build outputs)")
     ap.add_argument("--expressed-genes", default=None,
                     help="path to the expressed-gene list to use (overrides expressed_genes/<build>.txt)")

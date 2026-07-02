@@ -1,5 +1,5 @@
 """Per-state EXPRESSED-protein lists by MEAN NORMALIZED EXPRESSION (CP10k), for the
-expression-defined-node-set experiment (build_literature_weighted_influence.py --expressed-backbone).
+expression-defined-node-set experiment (build_ppi_network.py --expressed-backbone).
 
 A gene is "expressed" in a state population if its MEAN CP10k expression (counts per 10k, i.e.
 library-size-normalize each cell to total 1e4, then average over the state's cells) is >= CP10K_CUTOFF.

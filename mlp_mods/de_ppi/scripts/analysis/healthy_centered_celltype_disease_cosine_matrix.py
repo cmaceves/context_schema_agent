@@ -6,7 +6,7 @@ MEAN. Scoped to MACROPHAGE disease groups (mac/crohn, mac/ild, mac/uc) since the
   cell[A,B] = mean_p cos(shift_A[p], shift_B[p])
 Output: tables/healthy_centered_celltype_disease_cosine_matrix.tsv
 
-Run: .venv/bin/python mlp_mods/de_ppi/influence_analysis/write_celltype_disease_cosine_tsv_healthy.py \
+Run: .venv/bin/python mlp_mods/de_ppi/write_celltype_disease_cosine_tsv_healthy.py \
        --out-name crohn_alzheimer_ild_uc_embedding_expressed
 """
 from __future__ import annotations

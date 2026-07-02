@@ -2,10 +2,10 @@
 
 Reads results/<out_name>/disease_celltype_protein_cosine.tsv (long form, i<=j), rebuilds the full
 symmetric matrix, and writes both a heatmap-table PNG and a full-square TSV into
-results/<out_name>/influence_analysis/tables/.
+results/<out_name>/tables/.
 
 Run (.venv):
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/plot_celltype_disease_cosine_table.py \
+  .venv/bin/python mlp_mods/de_ppi/plot_celltype_disease_cosine_table.py \
       --out-name crohn_alzheimer_ild_uc_embedding_expressed
 """
 from __future__ import annotations

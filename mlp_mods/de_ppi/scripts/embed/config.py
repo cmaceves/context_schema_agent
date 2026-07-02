@@ -1,4 +1,4 @@
-"""Build config for the de_ppi influence pipeline — generalizes to (disease, cell type).
+"""Build config for the de_ppi pipeline — generalizes to (disease, cell type).
 
 Resolves a build named in 02_build_ppi/builds_manifest.json into the concrete paths
 the de_ppi scripts need. Read-only on the shared manifest; everything de_ppi-specific
@@ -85,32 +85,12 @@ class DePpiBuild:
         return self.results_dir / "networks"
 
     @property
-    def influence_dir(self) -> Path:
-        return self.results_dir / "influence_analysis"
-
-    @property
-    def p3_influence(self) -> Path:
-        return self.results_dir / "P3_influence.tsv"
-
-    @property
-    def embed_influence(self) -> Path:
-        return self.results_dir / "embedding_influence.tsv"
-
-    @property
     def network_nodes(self) -> Path:
         return self.networks_dir / "network_nodes.tsv"
 
     @property
     def network_edges(self) -> Path:
         return self.networks_dir / "network_edges.tsv"
-
-    @property
-    def drug_table(self) -> Path:
-        return self.influence_dir / f"{self.disease_slug}_drug_influence.tsv"
-
-    @property
-    def phase_plot(self) -> Path:
-        return self.influence_dir / "phase_vs_percentile.png"
 
 
 def load_build(name: str) -> DePpiBuild:

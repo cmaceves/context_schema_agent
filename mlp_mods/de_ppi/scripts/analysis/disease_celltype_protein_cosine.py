@@ -13,7 +13,7 @@ Proteins present in ALL groups (so consensus is balanced); healthy/donor-split e
 Output: results/<out_name>/disease_celltype_protein_cosine.tsv  (long form, one row per group pair i<=j).
 
 Run (.venv):
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/disease_celltype_protein_cosine.py \
+  .venv/bin/python mlp_mods/de_ppi/disease_celltype_protein_cosine.py \
       --out-name crohn_alzheimer_ild_uc_embedding_expressed
 """
 from __future__ import annotations

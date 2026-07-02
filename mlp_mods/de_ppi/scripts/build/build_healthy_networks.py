@@ -2,8 +2,8 @@
 into an existing joint-embedding networks/ dir as new tags healthy_<celltype>.
 
 A healthy network is the disease-free anchor for a cell type: the PINNACLE cell-type backbone with
-OmniPath directed edges among it (the same topology rule as the disease builds, build_literature_
-weighted_influence.py line 95/130), but with NO differential expression -> no DE-added proteins, no
+OmniPath directed edges among it (the same topology rule as the disease builds in
+build_ppi_network.py), but with NO differential expression -> no DE-added proteins, no
 literature/metabolite nodes, and every sender weight = 1.0 (zero rank-shift). So it captures the
 cell type's wiring with no disease perturbation.
 

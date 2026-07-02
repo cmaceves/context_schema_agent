@@ -4,7 +4,7 @@ cross-network MEAN of that protein. r_X[p] = Z_X[p] - Z_ref[p]; cell(A,B)=min‖
 cos(r_A,r_B). Scoped to MACROPHAGE networks + proteins present in the reference (the origin is
 macrophage-specific). The reference tag itself is excluded from the matrix.
 
-Run: .venv/bin/python mlp_mods/de_ppi/influence_analysis/plot_healthy_centered_pair_direction_heatmap.py \
+Run: .venv/bin/python mlp_mods/de_ppi/plot_healthy_centered_pair_direction_heatmap.py \
        --out-name crohn_alzheimer_ild_uc_embedding_expressed
 """
 from __future__ import annotations

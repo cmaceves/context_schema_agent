@@ -8,7 +8,7 @@ Recomputes (standalone) the consensus-centered per-protein shift agreement:
 
 Output: ./tables/celltype_disease_cosine_matrix.tsv  (full symmetric matrix, short labels).
 Run (.venv, from repo root):
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/write_celltype_disease_cosine_tsv.py
+  .venv/bin/python mlp_mods/de_ppi/write_celltype_disease_cosine_tsv.py
 """
 from __future__ import annotations
 

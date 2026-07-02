@@ -19,10 +19,10 @@ moderate movers count proportionally (--mover-q adds an optional hard top-fracti
 Layout (cell type -> tissue -> state) and the gene-set / DE restriction options mirror
 plot_pair_similarity_heatmap.py.
 
-Output: results/<out_name>/influence_analysis/pair_direction_heatmap[_<sfx>].png  (+ .tsv)
+Output: results/<out_name>/pair_direction_heatmap[_<sfx>].png  (+ .tsv)
 
 Run:
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/plot_pair_direction_heatmap.py \
+  .venv/bin/python mlp_mods/de_ppi/plot_pair_direction_heatmap.py \
       --out-name crohn_alzheimer_ild_uc_embedding_expressed
 """
 from __future__ import annotations

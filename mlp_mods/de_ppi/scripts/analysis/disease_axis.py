@@ -12,11 +12,11 @@ direction (a pan-disease axis) or move in private directions. Proteins are restr
 present in ALL diseases so the consensus is balanced. Healthy and donor-split networks are excluded
 (consistent with the factor_combinations comparison set).
 
-Output: results/<out_name>/disease_axis.tsv  (long form: one row per disease pair i<=j;
-diagonal rows carry that disease's axis norm).
+Output: prints the pairwise disease-axis cosine matrix to stdout. (The ./tables/disease_axis.tsv
+file is no longer written.)
 
 Run (.venv):
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/disease_axis.py \
+  .venv/bin/python mlp_mods/de_ppi/disease_axis.py \
       --out-name crohn_alzheimer_ild_uc_embedding_expressed
 """
 from __future__ import annotations
@@ -93,8 +93,7 @@ def main(out_name) -> int:
                 "axis_norm_b": round(float(norms[j]), 4),
                 "n_proteins": n_common,
             })
-    out = res / "tables" / "disease_axis.tsv"
-    pd.DataFrame(rows).to_csv(out, sep="\t", index=False)
+    # (./tables/disease_axis.tsv output removed per workflow change; matrix is printed below.)
 
     print("\npairwise cosine between disease axes (diagonal = 1; norm in []):")
     print("          " + "".join(f"{dx:>10}" for dx in diseases))

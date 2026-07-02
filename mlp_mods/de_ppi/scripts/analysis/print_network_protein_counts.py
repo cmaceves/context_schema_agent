@@ -8,12 +8,12 @@ For each network_nodes.tsv under results/<out_name>/networks/<tag>/, proteins ar
   added via DE  proteins with 'de' but NOT 'pinnacle' (DE genes not already in the backbone)
   total         all protein nodes in the network
 
-Outputs (results/<out_name>/influence_analysis/):
+Outputs (results/<out_name>/):
   network_protein_counts.tsv
   network_protein_counts.png
 
 Run:
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/print_network_protein_counts.py \
+  .venv/bin/python mlp_mods/de_ppi/print_network_protein_counts.py \
       --out-name crohn_alzheimer_ild_embedding
 """
 from __future__ import annotations
@@ -63,11 +63,14 @@ def main(out_name: str) -> int:
         p = d[d.node_type == "protein"]
         src = p.source
         is_pin, is_de = has(src, "pinnacle"), has(src, "de")
+        is_exp = has(src, "expressed")
+        is_backbone = is_pin | is_exp                  # backbone = curated PINNACLE OR expression-floor
         rows.append({
             "disease": disease, "cell_type": cell_type, "cell_state": state,
             "PINNACLE": int(is_pin.sum()),
+            "expressed": int(is_exp.sum()),
             "DE": int(is_de.sum()),
-            "added_via_DE": int((is_de & ~is_pin).sum()),
+            "added_via_DE": int((is_de & ~is_backbone).sum()),
             "total_proteins": int(len(p)),
         })
     df = pd.DataFrame(rows).sort_values(
@@ -82,7 +85,7 @@ def main(out_name: str) -> int:
     print(f"\nwrote {out_tsv}", flush=True)
 
     # ---- render as PNG table ----
-    headers = ["Disease", "Cell type", "Cell state", "PINNACLE", "DE", "Added via DE", "Total proteins"]
+    headers = ["Disease", "Cell type", "Cell state", "PINNACLE", "Expressed", "DE", "Added via DE", "Total proteins"]
     cell_text = df.values.tolist()
     fig, ax = plt.subplots(figsize=(12, 0.45 * len(df) + 1.2))
     ax.axis("off")

@@ -17,7 +17,7 @@ Reads networks from results/<out_name>/networks/<tag>/ and the joint embeddings 
 results/<out_name>/embeddings.npz.
 
 Run with .venv:
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/compare_joint_vs_single.py \
+  .venv/bin/python mlp_mods/de_ppi/compare_joint_vs_single.py \
       --out-name crohn_alzheimer_embedding --tags crohn_mac_inflammatory crohn_mac_resident crohn_mac_proliferating
 """
 from __future__ import annotations
@@ -42,7 +42,7 @@ from sklearn.neighbors import NearestNeighbors
 
 DE_PPI = Path("mlp_mods/de_ppi")
 sys.path.insert(0, str(DE_PPI))
-from embed_influence import Encoder, BilinearDecoder, build_operator, train, \
+from embedding_utils import Encoder, BilinearDecoder, build_operator, train, \
     DIM, LAYERS, EPOCHS, LR, NEG_RATIO, HOLDOUT, SEED
 
 

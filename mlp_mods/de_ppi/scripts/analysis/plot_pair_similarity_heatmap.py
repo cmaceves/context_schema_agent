@@ -6,10 +6,10 @@ proteins identically (a disease-invariant backbone); low % = the networks reorga
 Rows/cols are ordered by hierarchical clustering on (100 - %zero) so similar networks group,
 revealing which disease/cell/state networks converge regardless of disease.
 
-Output: results/<out_name>/influence_analysis/pair_zero_shift_similarity_heatmap.png
+Output: results/<out_name>/pair_zero_shift_similarity_heatmap.png
 
 Run:
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/plot_pair_similarity_heatmap.py \
+  .venv/bin/python mlp_mods/de_ppi/plot_pair_similarity_heatmap.py \
       --out-name crohn_alzheimer_ild_embedding
 """
 from __future__ import annotations

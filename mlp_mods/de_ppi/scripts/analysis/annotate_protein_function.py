@@ -12,7 +12,7 @@ Output (cached, reusable across embeddings):
   mlp_mods/de_ppi/protein_function.tsv   columns: symbol, func_class
 
 Run:
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/annotate_protein_function.py
+  .venv/bin/python mlp_mods/de_ppi/annotate_protein_function.py
 """
 from __future__ import annotations
 

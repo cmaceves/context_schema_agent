@@ -24,7 +24,7 @@ import json, sys
 from pathlib import Path
 import numpy as np, pandas as pd, scipy.sparse as sp, anndata as ad
 sys.path.insert(0, "mlp_mods/de_ppi")
-import build_literature_weighted_influence as B
+import build_ppi_network as B
 
 HERE = Path("mlp_mods/de_ppi"); RS = Path("mlp_mods/rank_shifts")
 NET = HERE / "results/crohn_alzheimer_ild_uc_embedding_expressed/networks"
@@ -86,7 +86,7 @@ def main():
 
     for state in states:
         build = f"macrophage_uc_smillie_{state}"
-        B.main(build, expressed_backbone=True, rank_weight_all=True,
+        B.main(build, expressed_backbone=True, rank_weight_all=False, neutral_weights=True,
                net_out=str(NET / f"uc_macrophage_{state}"), expr_genes_path=str(EXPR_DIR / f"{build}.txt"))
     # disease-emergent states: expression-only network from the UC cells (neutral weights, no DE arm)
     for state in emergent:

@@ -12,12 +12,12 @@ which can be either "not expressed there" OR "we didn't model that disease's rel
 (coverage is uneven: UC = macrophage/colon only; Alzheimer = microglia+fibroblast/brain; etc.). So
 absence here is NOT evidence the target is irrelevant to the disease.
 
-Output: results/<out_name>/influence_analysis/tables/shared_drug_target_pairs.tsv
+Output: results/<out_name>/tables/shared_drug_target_pairs.tsv
   columns: disease_a, disease_b, drug_name, shared_target, shared_mechanism, phase_a, phase_b,
            a_contexts, b_contexts, n_a_contexts, n_b_contexts
 
 Run:
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/dump_shared_drug_targets.py \
+  .venv/bin/python mlp_mods/de_ppi/dump_shared_drug_targets.py \
       --out-name crohn_alzheimer_ild_uc_embedding_expressed
 """
 from __future__ import annotations

@@ -14,7 +14,7 @@ the aggregate axis vectors. Proteins present in all diseases; healthy/donor-spli
 Output: results/<out_name>/disease_protein_cosine.tsv  (long form, one row per disease pair i<=j).
 
 Run (.venv):
-  .venv/bin/python mlp_mods/de_ppi/influence_analysis/disease_protein_cosine.py \
+  .venv/bin/python mlp_mods/de_ppi/disease_protein_cosine.py \
       --out-name crohn_alzheimer_ild_uc_embedding_expressed
 """
 from __future__ import annotations

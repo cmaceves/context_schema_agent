@@ -20,7 +20,7 @@ import json, sys
 from pathlib import Path
 import numpy as np, pandas as pd, scipy.sparse as sp, anndata as ad
 sys.path.insert(0, "mlp_mods/de_ppi")
-import build_literature_weighted_influence as B
+import build_ppi_network as B
 
 HERE = Path("mlp_mods/de_ppi"); RS = Path("mlp_mods/rank_shifts")
 NET = HERE / "results/crohn_alzheimer_ild_uc_embedding_expressed/networks"

@@ -1,11 +1,12 @@
 """Control floor recomputed with the UNWEIGHTED mean per-protein cosine metric.
 
-Same control pairs as dump_control_comparison.py (donor_split / between_study / pool_vs_pool), and the
-same reference-free consensus as plot_pair_direction_heatmap.py:
+Same control pairs as dump_control_comparison.py (donor_split / between_study / pool_vs_pool). The
+consensus origin is built ONLY from the MAIN (non-control) networks — the control replicates
+(split/s_/loo) are excluded so a control pair is never centered on a version of itself:
 
-  consensus[p] = mean over ALL networks (where present) of Z[.,p]
+  consensus[p] = mean over MAIN networks (where present) of Z[.,p]   (control tags excluded)
   r_X[p]       = Z_X[p] - consensus[p]
-  mean_prot_cos(A,B) = mean over proteins present in BOTH of  cos(r_A[p], r_B[p])     (UNWEIGHTED)
+  mean_prot_cos(A,B) = mean over proteins present in BOTH (and in >=1 main net) of cos(r_A[p], r_B[p])
 
 This differs from dump_control_comparison.py only by dropping the min‖dev‖ weighting, so the number is
 directly comparable to tables/celltype_disease_cosine_matrix.tsv (which is also an unweighted mean
@@ -14,11 +15,11 @@ per-protein cosine of consensus-centered shifts). shift_mean = mean ‖Z_A-Z_B�
 NOTE: unweighted means near-consensus proteins (unstable angle) count equally, so this floor is noisier
 / lower than the weighted heatmap value -- that is the price of matching the cosine-matrix metric.
 
-Output (results/<out_name>/influence_analysis/tables/):
+Output (results/<out_name>/tables/):
   control_comparison_meanprotcos.tsv          one row per control pair
   control_comparison_meanprotcos_summary.tsv  mean per disease x cell_type x control_type x state
 
-Run: .venv/bin/python mlp_mods/de_ppi/influence_analysis/dump_control_comparison_meanprotcos.py
+Run: .venv/bin/python mlp_mods/de_ppi/dump_control_comparison_meanprotcos.py
 """
 from __future__ import annotations
 
@@ -44,17 +45,30 @@ CROHN_STATES = ["inflammatory", "resident", "proliferating"]
 ALZ_STATES = ["dam", "homeostatic", "interferon", "proliferating"]
 
 
-def main(out_name) -> int:
+def main(out_name, main_build) -> int:
     res = DE_PPI / "results" / out_name
     (res / "tables").mkdir(parents=True, exist_ok=True); (res / "images").mkdir(parents=True, exist_ok=True)
     d = np.load(res / "embeddings.npz", allow_pickle=True)
     tags, Z, present = list(d["tags"]), d["Z"], d["present"]
     is_prot = d["node_type"] == "protein"
 
+    # MAIN (non-control) networks = the tags of the main build; control replicates are excluded from
+    # the consensus so a control pair is never centered against a version of itself.
+    main_tags = set(np.load(DE_PPI / "results" / main_build / "embeddings.npz", allow_pickle=True)["tags"])
+    is_main = np.array([t in main_tags for t in tags])
+    print(f"consensus over {int(is_main.sum())}/{len(tags)} MAIN networks "
+          f"(excluded {int((~is_main).sum())} control tags)", flush=True)
+
     pi = np.where(is_prot)[0]
     Zp, pres = Z[:, pi, :], present[:, pi]                       # (T, n_prot, dim), (T, n_prot)
-    masked = np.where(pres[:, :, None], Zp, np.nan)
-    consensus = np.nanmean(masked, axis=0)                       # reference-free origin
+    contrib = pres & is_main[:, None]                            # only main networks feed the centroid
+    masked = np.where(contrib[:, :, None], Zp, np.nan)
+    with np.errstate(invalid="ignore"):
+        import warnings
+        with warnings.catch_warnings():                          # proteins in no main net -> all-nan slice
+            warnings.simplefilter("ignore", RuntimeWarning)
+            consensus = np.nanmean(masked, axis=0)               # main-only reference-free origin
+    valid = ~np.isnan(consensus).any(axis=1)                     # proteins present in >=1 main network
     R = Zp - consensus[None]                                     # deviation vectors
     Rn = np.linalg.norm(R, axis=2)
     ti = {t: i for i, t in enumerate(tags)}
@@ -68,7 +82,7 @@ def main(out_name) -> int:
         ta, tb = tag_tissue(a), tag_tissue(b)
         assert ta == tb, f"tissue not controlled: {a}({ta}) vs {b}({tb})"
         ia, ib = ti[a], ti[b]
-        both = pres[ia] & pres[ib]
+        both = pres[ia] & pres[ib] & valid                       # only proteins with a main-net centroid
         if both.sum() == 0:
             return
         ra, rb = R[ia, both], R[ib, both]
@@ -92,11 +106,7 @@ def main(out_name) -> int:
         singles = [t for t in (f"alz_microglia_{s}_{k}" for k in ("s1", "s2", "s3")) if t in have]
         for a, b in combinations(singles, 2):
             add("Alzheimer", "microglia", "between_study", s, a, b)
-    # pool_vs_pool (Alz LOO pools)
-    for s in ALZ_STATES:
-        pools = [t for t in (f"alz_microglia_{s}_loo{i}" for i in (1, 2, 3)) if t in have]
-        for a, b in combinations(pools, 2):
-            add("Alzheimer", "microglia", "pool_vs_pool", s, a, b)
+    # (pool_vs_pool control removed; superseded by control m = healthy_loo)
 
     df = pd.DataFrame(rows)
     out = res / "tables"; out.mkdir(parents=True, exist_ok=True)
@@ -114,5 +124,7 @@ def main(out_name) -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-name", default="crohn_alzheimer_ild_uc")
+    ap.add_argument("--main-build", default="crohn_alzheimer_ild_uc_embedding_expressed",
+                    help="build whose tags define the MAIN (non-control) networks for the consensus")
     a = ap.parse_args()
-    raise SystemExit(main(a.out_name))
+    raise SystemExit(main(a.out_name, a.main_build))
