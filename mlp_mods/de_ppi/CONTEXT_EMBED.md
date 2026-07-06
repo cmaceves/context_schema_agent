@@ -13,7 +13,7 @@ Add a center loss on the DISEASE ARM: for each protein present in multiple netwo
 embeddings of the SAME arm together and push different-arm centroids apart (hinge, margin). Forces disease/
 healthy (and disease-vs-disease) to be an explicit axis instead of a byproduct of edge reconstruction.
 
-## Method 4 — healthy-centered / represent the delta  (dir: `..._healthy_centered`)
+## Method 4 — healthy-centered / represent the delta  (dir: `..._healthy_centered`, implemented but never built)
 Add an auxiliary head that reconstructs the disease-vs-healthy EXPRESSION change from the embedding DELTA:
 `aux(Z_disease[p] − healthy_centroid[p]) ≈ expr_disease[p] − mean_healthy_expr[p]`. Forces the healthy-centered
 shift (not absolute position, which is degree/identity-dominated) to encode the disease change.
@@ -56,9 +56,10 @@ pretrained embeddings** rather than the raw link-prediction encoder.
 beats predict-the-mean; held-out `crohn_colon_macrophage_inflammatory` delta is worst (−0.092), and `L_aux`
 stayed flat (~0.05) in training. Caveat: the primary `L_mask` also came in ≈0, so this is **not** a clean test
 of `L_aux` — it's confounded by the link anchor competing (loss ≫ L_mask) and by the **global shared mask set**
-(same universe nodes masked in every net → co-masked neighbourhoods). Isolation plan: reproduce the step-8
-standalone masked-FM baseline (R²>0), then add `L_aux` alone, then the anchor; try lr 1e-3 / per-net masking.
-Result recorded in HISTORY.md §9; artifacts in `results/crohn_alzheimer_ild_uc_masked_delta/`.
+(same universe nodes masked in every net → co-masked neighbourhoods). Isolation plan: first **establish whether
+plain masked-FM beats predict-the-mean here at all** (the step-8 `_masked` dir was deleted, no surviving number),
+then add `L_aux` alone, then the anchor; try lr 1e-3 / per-net masking. Result recorded in HISTORY.md §9;
+artifacts in `results/crohn_alzheimer_ild_uc_masked_delta/`.
 
 ## Baseline objective (both keep it)
 Directed link prediction (bilinear decoder + negative sampling) + edge-weight reconstruction, summed over

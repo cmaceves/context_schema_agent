@@ -121,8 +121,10 @@ embedding shift, ~0 expression change, unstable low-degree nodes). The corrected
 interpretable substrate**; the encoder must earn its keep by beating pseudobulk on cross-study reproducibility.
 
 ## 10. Build-dir lineage
-`..._expressed` (raw) → `..._combat_loc` (ComBat loc-only, current canonical) → `..._combat_loc_g` (+Garrido,
-partial) → `..._scvi` (in progress). Original dirs are never overwritten; each correction makes a new dir.
+**See HISTORY.md for the authoritative, current lineage** (expressed → combat_loc → combat_loc_coexpr →
+{coexpr_exprfilt, coexpr_healthyph → context_contrastive / masked / masked_delta}; side branches
+pinnacle_combat_ct and expressed_scvi [macrophage built]). Original dirs are never overwritten; each change
+makes a new dir. (This section previously held a stale hand-maintained diagram — removed to avoid drift.)
 
 ## Code map
 `rank_shifts/de_scripts/` pulls + `state_split.py`; `de_ppi/scripts/build/controls/` (`build_shared_nodes`,
@@ -170,6 +172,8 @@ All embedding builds use the **expressed** node set (expressed proteins ∪ DE �
 dropped — see HISTORY.md step 2). Networks = directed PPI per (disease, cell type, cell state); shared-encoder
 joint embedding (`joint_embed_*.py`), 64-dim. This table predates the coexpr/scVI/masked builds — **use
 HISTORY.md for the current lineage**; kept here for the original 4 builds' network counts / source coverage.
+**These four dir names are no longer on disk** (superseded by the coexpr/scVI/masked builds) — retained only as
+a historical record of counts, not as pointers to live directories.
 
 | build | networks | diseases | cell types | source datasets | notes |
 |---|---|---|---|---|---|
