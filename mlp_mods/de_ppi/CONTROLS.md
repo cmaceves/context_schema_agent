@@ -1,5 +1,19 @@
 # CONTROLS.md — control / factor-contrast design (a–j)
 
+> **⚠️ DEPRECATED (2026-07-02) — the a–j ladder is no longer the embedding-evaluation framework.**
+> Retained below for the record, but superseded for two reasons: (1) it is **circular for any objective
+> trained on the arm label** (contrastive, healthy_centered) — the disease control `g` rises by
+> construction, not because disease signal is real (see CONTEXT_EMBED.md); (2) the ladder measures
+> per-factor embedding-shift magnitude/direction on the frozen link-prediction space, and that space is
+> now shown to be dominated by **out-degree + expression passthrough**, not target/disease biology (see the
+> scVI in-silico-perturbation entry in HISTORY.md: projection ≈ hub propagation, sign set by link-pred
+> geometry). Going forward, builds are judged by **generalization**, not this ladder: leave-one-study-out
+> masked-feature reconstruction, and LOSO / held-out-protein performance of a supervised disease-shift
+> (ΔZ) → OpenTargets head (`scripts/analysis/embedding_target_cv.py`).
+> **Not deprecated:** the ComBat batch-correction result (the "ComBat batch correction…" section) — using
+> the floors to show between-study batch is removable to the donor floor is a legitimate feature-level
+> diagnostic and stands independent of whether the ladder is used to score embeddings.
+
 Controls for the `crohn_alzheimer_ild_uc_embedding_expressed` joint embedding. The goal: put the
 **noise floors** (disease-arm a, b; healthy-arm h, i) on the same ladder as the **biological factor
 effects** (c–g), so we can ask whether a disease/state/cell-type/tissue effect exceeds what sampling,

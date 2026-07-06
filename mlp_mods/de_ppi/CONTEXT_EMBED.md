@@ -18,6 +18,48 @@ Add an auxiliary head that reconstructs the disease-vs-healthy EXPRESSION change
 `aux(Z_disease[p] − healthy_centroid[p]) ≈ expr_disease[p] − mean_healthy_expr[p]`. Forces the healthy-centered
 shift (not absolute position, which is degree/identity-dominated) to encode the disease change.
 
+### Method 4 (refined) — masked differential aux loss  [design; the version to build]
+As implemented (`train_context_embed.py --method healthy_centered`), the head is
+`aux = Linear(dim,dim)→ReLU→Linear(dim,1)`; per epoch it computes, over healthy nets, a per-protein healthy
+embedding centroid `hz[p]` and expression centroid `hef[p]`, then for each disease net adds
+`MSE( aux(Z_i[p] − hz[p]),  expr_i[p] − hef[p] )` to the baseline with weight λ. Gradients flow through the
+encoder, so the **healthy-centered shift ΔZ_p** (not absolute position) is pushed to decode the disease
+expression change.
+
+**Why the as-implemented version is weak — expression passthrough.** With `use_expr_feat` the encoder input
+already *is* expression (`Linear(1,dim)`), so `ΔZ_p` already carries `expr_disease − expr_healthy` almost
+linearly, and the head can drive the MSE→0 by **reading its own input back out** — no topology learned. This
+is the identity-shortcut in expression form and is the likely reason the method came out faint. **The single
+change that fixes it: MASK the target protein's own expression** when predicting its own Δexpr, so `ΔZ_p`'s
+disease signal must come from **neighbours' shifts**, not p's passed-through value (masked-FM fused with the
+differential target). This turns the loss from an identity readout into a graph-using objective.
+
+**Two smaller fixes:** (1) pair each disease net with its **matched-context healthy** (same tissue+state),
+not the pooled cross-tissue `hz`/`hef` centroid — the scVI build has exact pairs
+(`crohn_colon_macrophage_inflammatory ↔ healthy_colon_macrophage_inflammatory`) — removing cross-tissue
+contamination of the Δexpr target; (2) if the single scalar target underpowers the 64-d geometry, widen it
+(predict neighbours' Δexpr / a small vector).
+
+**What it does / does not.** It makes the healthy-centered shift an explicitly decodable, neighbour-informed
+representation of the disease expression change — a denoised disease-direction feature for the disease-axis and
+target-prioritisation goals. It is **co-variation structure in our own cross-context data, not causal/
+perturbational** (no interventional data; not attempting causation).
+
+**Evaluation — generalization, NOT the deprecated a–j ladder** (CONTROLS.md): (a) leave-one-study-out aux MSE
+vs a predict-the-mean baseline — does `shift → Δexpr` generalize to unseen studies/proteins; (b) does the
+resulting `ΔZ` improve the supervised `ΔZ → OpenTargets` head (`embedding_target_cv.py`) under LOSO. If masking
+is on and it still only matches passthrough, the graph adds nothing → drop it. Best run **on top of masked-FM
+pretrained embeddings** rather than the raw link-prediction encoder.
+
+**First run (2026-07-02) — NULL, but confounded.** `train_masked_delta.py` (base `_coexpr_healthyph`, λ_aux 1,
+λ_link 0.25, lr 1e-2, 300 ep, CPU): held-out R²_vs_baseline = **−0.021 recon / −0.014 delta** — neither term
+beats predict-the-mean; held-out `crohn_colon_macrophage_inflammatory` delta is worst (−0.092), and `L_aux`
+stayed flat (~0.05) in training. Caveat: the primary `L_mask` also came in ≈0, so this is **not** a clean test
+of `L_aux` — it's confounded by the link anchor competing (loss ≫ L_mask) and by the **global shared mask set**
+(same universe nodes masked in every net → co-masked neighbourhoods). Isolation plan: reproduce the step-8
+standalone masked-FM baseline (R²>0), then add `L_aux` alone, then the anchor; try lr 1e-3 / per-net masking.
+Result recorded in HISTORY.md §9; artifacts in `results/crohn_alzheimer_ild_uc_masked_delta/`.
+
 ## Baseline objective (both keep it)
 Directed link prediction (bilinear decoder + negative sampling) + edge-weight reconstruction, summed over
 networks — i.e. exactly `joint_embed.py`, plus the method loss (weight λ).
