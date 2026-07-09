@@ -1,34 +1,33 @@
-# PLAN2.md — Disease state-shift influence on a PINNACLE/OmniPath PPI
+# PLAN2.md — Disease state-shift PPI networks + joint embedding (PINNACLE/OmniPath)
 
 ## Goal
 
 For a (cell type, disease), build a directed PPI whose **outgoing** edge weights are
 set by each protein's **rank shift** between the healthy and disease states
-(sender-gated), and score how much each protein **influences the dysregulated set** —
-to ask which nodes can *reach* the dysregulated proteins/metabolites (control-point /
-target reasoning). Influence is computed **analytically** (`P^k` propagation on the
-weighted PPI; see `de_ppi/`), not via a learned embedding.
+(sender-gated). These per-(cell type, disease) networks are then **jointly embedded**
+in one shared space (`de_ppi/`) so the geometry of a protein — and how it **shifts**
+between diseases, cell types, and states — can be compared across builds.
 
 This is run as a controlled single-cell-type case (macrophage / Crohn's), but the
 build stage is **parameterized by (cell type, disease)** so other builds can be
 added.
 
 > **Status (current).** The shared **R-GCN embedding encoder** that originally produced
-> the embedding shift + Jacobian influence/reach has been **retired** — its code (former
-> stage 4, `04_state_shift_encoder/`) and its inputs (the marker-Wilcoxon per-arm ranks
+> the embedding shift has been **retired** — its code (former stage 4,
+> `04_state_shift_encoder/`) and its inputs (the marker-Wilcoxon per-arm ranks
 > `rank_shifts/<build>/<arm>.tsv` and `02_build_ppi/builds/<build>/node_vocab.tsv`) were
-> removed. Influence/target analysis now runs **analytically** through the **`de_ppi/`
-> pipeline** — a `P^k` propagation on the weighted PPI, no learned embeddings (see the
-> *de_ppi influence pipeline* section below). The encoder sections here are kept for
-> historical context and marked accordingly.
+> removed. The **current** pipeline is `de_ppi/`: build directed per-(cell type, disease)
+> PPI networks, then learn a **joint embedding** across them (see the *de_ppi pipeline*
+> section below). The encoder sections here are kept for historical context and marked
+> accordingly.
 
 ---
 
 ## Course we settled on (the model) — *historical (retired encoder)*
 
 > This section describes the original **R-GCN encoder** approach, now **retired** (code +
-> inputs removed). The **current** model is the analytic `de_ppi/` influence pipeline
-> documented below. Kept for context.
+> inputs removed). The **current** pipeline is the `de_ppi/` network build + joint
+> embedding documented below. Kept for context.
 
 - **Nodes (per build):** top-Wilcoxon-marker pool per arm (resample recipe:
   100 cells/cluster × 10 trials, keep markers in ≥90%) induced on the **PINNACLE
@@ -51,9 +50,7 @@ added.
 - **Objective:** unsupervised directed link prediction (asymmetric MLP decoder),
   loss summed over both arms. **Edge split is pair-grouped** (both arcs of a pair
   in the same fold) to avoid reverse-edge leakage. Held-out AUC ~= 0.88.
-- **Outputs:** two embeddings per protein, the per-protein **embedding shift**,
-  pairwise **influence** matrices (Jacobian, per arm), and **reach scores**
-  (does perturbing a node propagate to the rank-dysregulated set, hops 1-3).
+ (does perturbing a node propagate to the rank-dysregulated set, hops 1-3).
 
 ### Caveats baked into how we read results
 > See **[CAVEATS.md](CAVEATS.md)** for the full, evidence-backed list (depth/batch
@@ -86,14 +83,16 @@ mlp_mods/
 │   ├── <build>_states/              # states/<state>/pseudobulk_de.tsv (Leiden states; cell_states.tsv, state_counts.tsv)
 │   └── _stale/                      # superseded outputs (old marker-argmax states, orphan clusters)
 ├── 03_opentargets_rebuild/   # disease labels + known drugs (OpenTargets positive/negative)
-├── de_ppi/                   # influence models (analytic P^k AND learned embedding; see sections below)
-│   ├── config.py, build_literature_weighted_influence.py
-│   ├── precompute_expressed_genes.py  # --expressed backbone (detect>=floor) for cell types PINNACLE lacks
-│   ├── embed_influence.py            # single-network GNN encoder + Jacobian influence
-│   ├── joint_embed_influence.py      # SHARED-encoder joint embedding across networks (cross-disease shared space)
-│   ├── influence_analysis/           # plot_phase_*, plot_embedding_clusters (PCA/t-SNE), compare_joint_vs_single
-│   ├── results/<build>/              # per-build analytic network + influence
-│   └── results/<embedding>/          # joint embedding: networks/<tag>/, joint_influence.tsv, embedding_shift.tsv, embeddings.npz
+├── de_ppi/                   # directed PPI networks + joint embedding (see sections below)
+│   ├── scripts/build/build_ppi_network.py             # --build: node/edge/sender-weight construction -> networks/
+│   ├── scripts/build/precompute_expressed_threshold.py # --expressed backbone (detect>=floor) for cell types PINNACLE lacks
+│   ├── scripts/embed/config.py                        # load_build(name) -> resolved per-build paths
+│   ├── scripts/embed/joint_embed.py                   # SHARED-encoder joint embedding across networks (cross-disease shared space)
+│   ├── scripts/embed/joint_embed_context.py           # + factorized (disease/tissue/cell/state) context vectors
+│   ├── scripts/embed/embedding_utils.py               # shared encoder/decoder/training + Jacobian readout
+│   ├── scripts/analysis/                              # compare_joint_vs_single + cosine/shift/disease-axis tables & plots
+│   ├── results/<build>/networks/     # per-build network_nodes.tsv, network_edges.tsv
+│   └── results/<embedding>/          # joint embedding: networks/<tag>/, embeddings.npz, embedding_shift.tsv, joint_influence.tsv
 ├── lit_search/               # stage-L LLM-proposed, literature-verified searches
 ├── 02_build_ppi/             # (retired-encoder support) builds_manifest.json is SHARED + still
 │   │                         #   read by de_ppi/config.py + lit_search; build_disease_ppi.py +
@@ -114,31 +113,27 @@ mlp_mods/
 #    cell-STATE split (Leiden, disease-blind)    ->  rank_shifts/<build>_states/states/<state>/pseudobulk_de.tsv
 .venv/bin/python mlp_mods/rank_shifts/de_scripts/macrophage_crohn_states.py
 
-# 2. per-build network + analytic influence (de_ppi)  ->  de_ppi/results/<build>/
+# 2. per-build directed PPI network (de_ppi)  ->  de_ppi/results/<build>/networks/
 #    --no-lit for builds without a literature panel; --expressed when PINNACLE lacks the cell type
-.venv/bin/python mlp_mods/de_ppi/build_literature_weighted_influence.py    --build macrophage_crohn
+.venv/bin/python mlp_mods/de_ppi/build_ppi_network.py --build macrophage_crohn
 
-# 3. learned embedding influence (single network)  ->  de_ppi/results/<build>/embedding_influence.tsv
-.venv/bin/python mlp_mods/de_ppi/embed_influence.py --build macrophage_crohn
-
-# 4. JOINT embedding across many networks (cross-disease shared space)
+# 3. JOINT embedding across many networks (cross-disease shared space)
 #    stage each network into results/<embedding>/networks/<tag>/, then:
-.venv/bin/python mlp_mods/de_ppi/joint_embed_influence.py --out-name crohn_alzheimer_ild_embedding
-.venv/bin/python mlp_mods/de_ppi/influence_analysis/plot_embedding_clusters.py --out-name crohn_alzheimer_ild_embedding --method pca   # or tsne
-.venv/bin/python mlp_mods/de_ppi/influence_analysis/plot_phase_joint_boxplot.py --out-name crohn_alzheimer_ild_embedding [--norm percentile|mean] [--layout tag]
+.venv/bin/python mlp_mods/de_ppi/joint_embed.py --out-name crohn_alzheimer_ild_embedding
+#    -> results/<embedding>/{embeddings.npz, embedding_shift.tsv, joint_influence.tsv}
+#    downstream comparison/plots: mlp_mods/de_ppi/compare_joint_vs_single.py + the analysis/ tables
 ```
 
 Convention: each build's reference arm is named **`healthy`**; the other is the disease
 arm. Outputs are keyed by build name, so multiple diseases/cell types coexist. (The
-former stage-2 `build_disease_ppi.py` + stage-4 R-GCN encoder are retired; the learned
-embedding in step 3–4 is a NEW, analytic-free encoder built on the de_ppi networks, not the
-old R-GCN.)
+former stage-2 `build_disease_ppi.py` + stage-4 R-GCN encoder are retired; the joint
+embedding in step 3 is a NEW encoder built on the de_ppi networks, not the old R-GCN.)
 
 ## Open validation thread
 External agreement (does it recover known IBD biology?): GO/pathway enrichment of
-high-influence genes (go_cache), and correlation against an independent IBD intestinal
-proteomics signature (e.g. PXD001608), with a degree-matched / label-permuted null.
-Targeting = influence + ESM (druggability).
+the top embedding-shift genes (go_cache), and correlation against an independent IBD
+intestinal proteomics signature (e.g. PXD001608), with a degree-matched / label-permuted
+null. Targeting = embedding shift + ESM (druggability).
 
 ---
 
@@ -154,7 +149,7 @@ of citations, so the LLM proposes and the literature search sources the evidence
 They produce machine-readable evidence tables the rest of the pipeline leans on: both
 the literature-weighted edge directions and the metabolite/lipid sink nodes (which fix
 the edge-coverage false-negatives in **[CAVEATS.md](CAVEATS.md) §2**) feed
-`de_ppi/build_literature_weighted_influence.py`.
+`de_ppi/build_ppi_network.py`.
 
 1. **`dysregulation_genes`** — the differentially-expressed GENES in the build's
    `(cell type, disease)`, each with an `elevated`/`suppressed` direction.
@@ -338,7 +333,7 @@ PYTHONPATH=mlp_mods .venv/bin/python -m lit_search.search_literature \
 Reads `cell_type`, `disease`, `disease_slug`, `celltype_slug` from
 `builds_manifest.json`; writes the TSV into `literature_<disease_slug>/<celltype_slug>/`.
 
-### How these feed the model (wired into `de_ppi/build_literature_weighted_influence.py`)
+### How these feed the network build (wired into `de_ppi/build_ppi_network.py`)
 - **`dysregulation_genes`** → literature edge **directions** (elevated→2.0,
   suppressed→0.5) for genes that are *not* in the CellxGene DE set; read from
   `<disease>_<celltype>_dysregulation_genes.tsv`.
@@ -352,37 +347,31 @@ Reads `cell_type`, `disease`, `disease_slug`, `celltype_slug` from
   provenance. Prefer verified rows (`evidence_location != none`) when feeding the
   model; use `inferred_disease` to drop off-disease support.
 
-**Wiring (done).** `de_ppi/build_literature_weighted_influence.py` now consumes these
+**Wiring (done).** `de_ppi/build_ppi_network.py` now consumes these
 searches directly — gene directions from `dysregulation_genes`, metabolite sink nodes
 (+ `chebi_id`) from `dysregulation_metabolites`, unioned with the HMDB disease
 metabolites (`hmdb_<disease_slug>/<disease_slug>_metabolite_chebi.tsv`, regenerated
 from the raw HMDB XML by disease-association filter). The hand-staged
 `crohn_macrophage_DE_literature.tsv` / `crohns_only_metabolites.tsv` dependency is
-gone, and the standalone `build_metabolite_augmented_influence.py` /
-`build_de_ppi_influence.py` builders were removed (the metabolite-sink and baseline
-logic folded into the one literature-weighted builder). Metabolite **ChEBI grounding**
+gone, and the earlier standalone metabolite-augmented and baseline builders were
+removed (their metabolite-sink and baseline logic folded into `build_ppi_network.py`).
+Metabolite **ChEBI grounding**
 is wired (`resolve_ids.resolve_chebi`, EBI OLS, **exact label/synonym match only** over
 a few normalized name variants — no fuzzy fallback, so non-metabolites the model
 mis-lists stay unresolved; unresolved metabolites keep an empty `chebi_id` rather than
 being dropped).
 
-### de_ppi influence pipeline (generalized by `--build`)
-`de_ppi/` builds a directed disease/cell-type PPI and scores how much each protein
-**influences the dysregulated set**. It is parameterized by `--build <name>` via
-`de_ppi/config.py` (which resolves every path from `builds_manifest.json` + the build's
-slugs); per-build outputs land in `de_ppi/results/<build>/`.
+### de_ppi network build (generalized by `--build`)
+`de_ppi/` builds a directed disease/cell-type PPI. It is parameterized by `--build <name>`
+via `de_ppi/scripts/embed/config.py` (which resolves every path from `builds_manifest.json`
++ the build's slugs); per-build outputs land in `de_ppi/results/<build>/networks/`.
 
 ```
 de_ppi/
-├── config.py                                  # load_build(name) -> resolved paths (read-only on the manifest)
-├── build_literature_weighted_influence.py     # --build: node/edge/weight construction -> P^k influence
-├── influence_analysis/
-│   ├── drug_influence_table.py                # --build: OpenTargets drugs x influence rank/percentile
-│   └── plot_phase_vs_percentile.py            # --build: clinical-phase vs influence-percentile boxplot
+├── scripts/embed/config.py                    # load_build(name) -> resolved paths (read-only on the manifest)
+├── scripts/build/build_ppi_network.py         # --build: node/edge/sender-weight construction -> networks/
 └── results/<build>/
-    ├── P3_influence.tsv                        # per-protein influence + rank
-    ├── networks/{network_nodes,network_edges}.tsv
-    └── influence_analysis/{<disease_slug>_drug_influence.tsv, phase_vs_percentile.png}
+    └── networks/{network_nodes,network_edges}.tsv
 ```
 
 - **Nodes** = PINNACLE cell-type proteins ∪ DE genes (padj<0.05) ∪ literature genes.
@@ -390,13 +379,12 @@ de_ppi/
 - **Edges** = OmniPath protein→protein + MIND protein→metabolite (sink) edges.
 - **Sender weights**, two tracks: DE genes get the paired rank-shift gate
   `w = min(exp(-(disease_rank − ref_rank)/tau), wmax)` (tau=4000, wmax=5); literature
-  genes (not DE) get elevated→2.0 / suppressed→0.5; everything else 1.0.
-- **Influence** `= sum_{k=0..3} (P^k @ m)`, `P[i,j] = w(i)/Z(j)`, `m` = the dysregulated
-  set (DE ∪ literature ∪ metabolites). The k=0 **self-loop** credits a node for being
-  itself in the target set; reach-only influence = `influence − is_target`.
-- **influence_analysis/** joins the influence ranking to OpenTargets known drugs for the
-  build's disease family (per-drug table) and plots influence-percentile by clinical
-  phase, with comparison boxes for other macrophage diseases' drug targets.
+  genes (not DE) get elevated→2.0 / suppressed→0.5; everything else 1.0. Each node also
+  records its **direction** (elevated/suppressed), so the **dysregulated set** stays
+  defined for the embedding readout downstream.
+- These `network_nodes.tsv` / `network_edges.tsv` manifests are the input to the joint
+  embedding below; `build_expressed_embedding.py` / `build_pooled_disease.py` / the control
+  builders call `build_ppi_network.main()` to stage many networks at once.
 
 ### Cell-state definition (Leiden, disease-blind) — `rank_shifts/de_scripts/state_split.py`
 All `<build>_states.py` are thin wrappers over one shared module. States are defined by
@@ -416,42 +404,40 @@ across diseases:
 - **Alzheimer** (brain): `microglia_alzheimers` (+states), `fibroblast_alzheimers`, `glutamatergic_neuron_alzheimers`.
 - **ILD** (lung): `macrophage_ild` (+states) — the clean, well-powered, paired cross-disease macrophage comparator.
 - Backbone rules: cell-type PINNACLE edgelist when it exists; **`--expressed`** expression-floor backbone
-  (`precompute_expressed_genes.py`, detect≥0.065) when PINNACLE lacks the cell type (Tabula Sapiens has no
+  (`precompute_expressed_threshold.py`, detect≥0.065) when PINNACLE lacks the cell type (Tabula Sapiens has no
   cortical neuron → glutamatergic neuron uses this); `--no-lit`/no-OT for builds without a literature/drug panel.
 - **PAIRED requirement:** DE needs the normal + disease arms in the *same* dataset(s) with ≥3 donors and ≥20
   cells/donor *each*. Cross-dataset (unpaired) builds are confounded — `macrophage_atherosclerosis_unpaired`
   failed this (housekeeping genes significantly "DE", disease ≡ dataset); not usable. Sjogren fibroblast was
   clean-paired but 0 DE (compositional disease, removed).
 
-### Learned-embedding influence — `embed_influence.py` / `joint_embed_influence.py`
-A learned complement to the analytic P^k reach (a NEW analytic-free encoder on the de_ppi networks —
-**not** the retired R-GCN). A 2-layer weighted-directed message-passing encoder is trained by unsupervised
-link prediction; influence(i) = `‖ d(Σ_{j∈m} z_j) / dx_i ‖` (Jacobian of the dysregulated-set readout).
-The self-loop is gated by the node's sender weight `w(i)`.
-- **`embed_influence.py --build`** → single-network `embedding_influence.tsv`.
-- **`joint_embed_influence.py --out-name`** → ONE shared encoder + input table across many networks
-  (a forward pass per network, loss summed), giving a comparable shared space. Each network is a **tag** =
+### Joint embedding — `joint_embed.py`
+The per-build networks are embedded together in ONE shared space (a NEW encoder on the de_ppi
+networks — **not** the retired R-GCN). A 2-layer weighted-directed message-passing encoder is trained
+by unsupervised link prediction, with ONE shared encoder + input table across all networks (a forward
+pass per network, loss summed) so the spaces are directly comparable.
+- **`joint_embed.py --out-name`** → shared embedding across many networks. Each network is a **tag** =
   a subdir `results/<out_name>/networks/<tag>/`; tags mix cell types/states/diseases freely. Outputs:
-  `joint_influence.tsv` (`influence_<tag>` per tag), `embedding_shift.tsv` (per-node ‖Z_a−Z_b‖, all pairs),
-  `embeddings.npz`. Absent-in-a-network proteins are masked (NaN influence; excluded from shifts/plots).
-- **`crohn_alzheimer_ild_embedding`** is the current cross-disease shared space: 15 Leiden-state tags across
-  Crohn/Alzheimer/ILD. Plots: `plot_embedding_clusters.py` (PCA/t-SNE, colored by disease / cell type /
-  cell-type-state), `plot_phase_joint_boxplot.py` (drug-target influence by phase + degree-matched-hub null;
-  `--layout tag` for per-disease/cell/state target-vs-hub).
+  `embeddings.npz`, `embedding_shift.tsv` (per-node ‖Z_a−Z_b‖ between tags — the main signal: how a
+  protein's wiring shifts between states), and `joint_influence.tsv` (one readout: a per-tag Jacobian
+  influence(i) = `‖ d(Σ_{j∈m} z_j) / dx_i ‖` onto that network's dysregulated set `m`, self-loop gated
+  by the node's sender weight `w(i)`). Absent-in-a-network proteins are masked.
+- **`joint_embed_context.py`** adds factorized (disease/tissue/cell/state) context vectors to each node's
+  input, so the same protein can sit in different places per context.
+- **`crohn_alzheimer_ild_embedding`** is the current cross-disease shared space: Leiden-state tags across
+  Crohn/Alzheimer/ILD.
 - **Flattening check** (`compare_joint_vs_single.py`): the joint embedding does NOT flatten per-network
   structure — vs single-network it has *higher* effective dimensionality and *better* edge reconstruction.
   Weak disease separation in 2D is a projection effect (cell type dominates the top variance), not flattening.
 
 ### Cross-network comparison caveat (raw influence is set-size-confounded)
-Raw influence is a **sum over the dysregulated set**, so its magnitude tracks |set| (empirically
-Spearman ≈ 0.99 across tags). DE-set size in turn scales with donor count (power), so ILD (49 disease
-donors, ~2,000 targets) gives larger raw influence than Crohn macrophage (~6–11 donors, ~8–187 targets) —
-an artifact, not "Crohn drugs work better in ILD." Normalizations each fail one way: **mean** (÷|set|)
-favors small sets; **percentile** is inflated by out-degree (hubs rank high everywhere). The fair
-cross-disease metric is a **degree-matched, size-matched permutation z-score** (the analytic
-`specificity` column): observed influence on the real set vs random degree-matched same-size sets —
-controls both set size (same-size null) and degree (matched). Use that (or per-tag target-vs-degree-matched-hub)
-for cross-disease claims, never raw/mean/percentile alone.
+The `joint_influence.tsv` readout is a **sum over the dysregulated set**, so its magnitude tracks |set|
+(empirically Spearman ≈ 0.99 across tags). DE-set size in turn scales with donor count (power), so ILD
+(49 disease donors, ~2,000 targets) gives larger raw influence than Crohn macrophage (~6–11 donors,
+~8–187 targets) — an artifact, not a biological "this disease's drugs work better." Treat raw influence
+as a **within-network ranking only**. For cross-disease comparison rely on the **embedding shift**
+(degree-controlled by construction, since a protein's degree is similar across tags and cancels in the
+difference), with a degree-matched / size-matched permutation null — never raw influence alone.
 
 ## External UC ingest (Smillie 2019) — for a disease-similarity positive control
 
