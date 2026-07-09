@@ -88,3 +88,22 @@ scripts/context_embed/train_context_embed.py --method contrastive     --res-name
 scripts/context_embed/train_context_embed.py --method healthy_centered --res-name crohn_alzheimer_ild_uc_healthy_centered
 # then infer_controls + compare_controls + plot_pca_context.py for each
 ```
+
+## Copy-arrangement objectives (2026-07-08) — separate a protein's contexts by expression
+Goal: make a protein's per-context copies sit close when its expression is similar and far when different, so
+contexts (UC↔Crohn) are comparable — without the raw-expression level gradient. All on the scvi macrophage build.
+
+- **`_scvi_exprsep` distance rule** (`train_exprsep.py`): pull a protein's copies so ‖ΔZ‖ ≈ α·|Δexpr|.
+  Rigid two-sided → held-out corr **0.998** but IMPOSED (one shared linear expression axis) and **recreates a
+  level gradient** (level & change share the single expression input direction). One-sided (≥) → 0.97, floor binding.
+- **`_scvi_exprsep` diffvec-cosine** (`train_diffvec_cosine.py`): learned-identity input, NO raw expression;
+  match copies' embedding cosine to the cosine of their expression difference-vectors. Removes the level gradient
+  but **train corr 0.50 / held-out 0.17 — does not generalize**; link AUC 0.95.
+- **Catch-22 (the load-bearing conclusion):** arranging copies by expression can't be *learned from the graph*
+  (graph carries no expression). Expression as input → trivial passthrough + level gradient; expression not an
+  input → can't generalize (memorizes training proteins, held-out ~0.17). Expression positioning is a *provided
+  feature*, not a learnable-from-topology pattern.
+- **Reference measurement:** on the plain `_expressed_scvi` build (no arrangement objective), copies already
+  track expression at corr **0.52** (embedding distance vs |Δexpr|), within-protein spread ≈ 40% of between-protein.
+  So the moderate context signal is present without any special objective; the objectives above either impose it
+  trivially or fail to generalize. Full record: HISTORY.md "Expression-signal & copy-arrangement experiments".

@@ -71,12 +71,15 @@ class Encoder(nn.Module):
     into A, the extra W_self keeps a residual identity path).
     """
 
-    def __init__(self, n: int, dim: int, layers: int, use_self_lin: bool = True, use_expr_feat: bool = False):
+    def __init__(self, n: int, dim: int, layers: int, use_self_lin: bool = True, use_expr_feat: bool = False,
+                 feat_dim: int = 1):
         super().__init__()
         self.use_self_lin = use_self_lin
-        self.use_expr_feat = use_expr_feat               # input = projected per-network log-expression (replaces self.x)
+        self.use_expr_feat = use_expr_feat               # input = projected per-node feature (replaces self.x)
         self.x = nn.Parameter(torch.randn(n, dim) * 0.1)
-        self.explin = nn.Linear(1, dim, bias=False)      # projects a node's (per-network) log-expression to the input
+        # projects a node's input feature to the embedding input. feat_dim=1 = log-expression scalar (default);
+        # feat_dim>1 = a feature vector (e.g. 1280-d ESM). node_feat passed to forward() must have this width.
+        self.explin = nn.Linear(feat_dim, dim, bias=False)
         self.lin = nn.ModuleList(nn.Linear(dim, dim, bias=False) for _ in range(layers))
         # residual identity path (W_self); ablated when use_self_lin=False -> positions come only from
         # neighbour messages (+ the self-loop folded into A, if present)
