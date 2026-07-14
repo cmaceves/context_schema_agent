@@ -2,8 +2,9 @@
 
 Chronological record of the network **builds** under `results/` and **why each one changed**. This is the
 narrative companion to `METHODS.md` (which documents what runs today), `CONTEXT_EMBED.md` (graph training
-objectives), and `SEQ_CONTEXT_EMBED.md` (the sequence+context→expression model, a no-graph branch). Each build
-is a new `results/<name>/` dir; **originals are never overwritten**.
+objectives), and `../seq_context/SEQ_CONTEXT_EMBED.md` (regulatory-neighbor link-prediction model — a no-graph
+branch, now a top-level `mlp_mods/seq_context/` project). Each build is a new `results/<name>/` dir; **originals
+are never overwritten**.
 
 Three things evolve across the lineage, roughly independently:
 1. **Node membership** — which proteins are nodes in each network (PINNACLE backbone → expression → per-context → placeholder-augmented).
@@ -155,8 +156,8 @@ Built `results/crohn_alzheimer_ild_uc_embedding_expressed_scvi_signed/` — same
 Reading: **DE-seeded RWR wins top-of-list (MRR)** by a wide margin at OT>0.5 (0.138, 2.6× PageRank) and edges it at OT>0.3; **embedding perturbations get slightly more targets into the top decile than PageRank** (scvi 29 vs 23 at OT>0.3) but never beat PageRank's MRR at OT>0.5; **DE alone is worst**; **ESM/signed variants add nothing** (all clustered 0.038–0.043 / 0.017–0.024). The supervised classifier (above) confirms the same verdict from the other direction. Net: simple topology+DE baselines meet or beat every learned embedding; the standing recommendation (supervision that isn't the OT-association proxy, or the linear-response readout) is unchanged.
 
 ## 13. `seq_context` — ESM+context embedding, SCENIC regulatory-neighbor link prediction  *(PLAN + SCENIC gen; no graph joint-embed; 2026-07-08)*
-New direction, **not** part of the joint-embed lineage — full spec in `SEQ_CONTEXT_EMBED.md`, working dir
-`seq_context/`. Learns a **context-specific protein embedding** = MLP(frozen ESM 1280-D ⊕ learned embeddings
+New direction, **not** part of the joint-embed lineage — full spec in `../seq_context/SEQ_CONTEXT_EMBED.md`,
+top-level workspace `mlp_mods/seq_context/`. Learns a **context-specific protein embedding** = MLP(frozen ESM 1280-D ⊕ learned embeddings
 cell_type 64 / disease 32 / tissue 32 / state 32), trained by **link prediction (BCE) on per-context SCENIC
 regulatory networks** (predict a protein's TF→target neighbors *in that context*). The per-protein context
 embedding is the deliverable; edge reconstruction is only the signal.
@@ -169,7 +170,95 @@ embedding is the deliverable; edge reconstruction is only the signal.
   co-expression, so labels transform expression but are **not leakage** while expression is not a model input;
   key metric is **context-lift** vs a context-blind ablation (degree alone reconstructs edges — the old
   topology-bound AUC 0.90), *not* raw edge AUC. `cell_type` constant (macrophage-only build) = no-op for now.
-- **SCENIC generation (in progress):** cells from `_embedding_expressed_scvi/scvi_staging/macrophage.h5ad`
-  (115k cells, raw `counts`, 6,820-gene universe, disease/state present; **tissue absent**, proliferating
-  sparse). Open decisions: GRNBoost2-only vs full SCENIC (+cisTarget motif DBs); context granularity
-  (disease×tissue×state vs disease×state); install target for pyscenic.
+- **SCENIC generation — DONE (2026-07-08):** GRNBoost2-only (decided), 18 contexts (disease×tissue×state;
+  tissue recovered via adapt_scvi_build's SRC_TISSUE), raw `counts` from `_embedding_expressed_scvi/scvi_staging/
+  macrophage.h5ad`, cap 5,000 cells, mamba env `scenic` (py3.10; arboreto 0.1.6 needs pre-dask-expr stack).
+  All 18/18 written to `mlp_mods/seq_context/scenic/networks/<tag>/edges.tsv` (raw ranked `tf,target,importance`,
+  0.27–1.95M edges each, ~50% dense). 516 TFs from protein_function.tsv. Batch caveat: colon contexts pool 2–4
+  studies (per-study consensus = v2); lung/ILD single-study clean.
+- **Top-k labels — DONE (2026-07-08):** `threshold_topk.py` keeps each TF's top-50 targets (fixed k across
+  contexts) → `edges_topk.tsv`, 12,450–24,550 positives/context (~1% density).
+- **Link-pred training — DONE (2026-07-09), full detail in `SEQ_CONTEXT_EMBED.md`.** v1 (random neg, no lift,
+  eval artifact) → v1.1 hard-neg (+0.109) → v2 resample / v3 k75 / **v4 cisTarget (FULL 0.749, lift +0.149)** →
+  v5 3-cell-type / v6 ESM→256 proj / **v7 4-cell-type (`link_v7_4ct`, 40 contexts, FULL 0.764, lift +0.123)**.
+  Factor ablation: state > disease > tissue ≫ cell_type (≈0). Target validation on v7: 3a targets cluster only
+  in crohn_colon (2/11 contexts); 3b EMB linearly separable but ≈ ESM; phase boxplot flat; ΔZ recovery near
+  random (MRR 0.0022); global-pooled EMB target MRR ≈0.001 vs ESM 0.021–0.041; ESM+EMB concat helps for the
+  **v8 learned-ID (no-ESM) embedding** (logreg MRR 0.021→0.031) but not for the v7 ESM-based emb; kNN GO-BP
+  coherence EMB 0.207 < ESM 0.283.
+- **Expansion builds — DONE (2026-07-10), detail in `SEQ_CONTEXT_EMBED.md`.** Added disease/cell-type breadth:
+  heart_valve (macrophage+fibroblast, heart) → **v9 (52 ctx, FULL 0.765/lift +0.117)**; T cells (5 marker-scored
+  subtypes across crohn/uc/ild/covid/athero, 80 ctx) → **v10 (132 ctx, FULL 0.785/lift +0.107)**. Pulled OT drug
+  labels for covid/athero/heart-valve (all-OT union now 314). **Data-scaling test (the key finding):** pooling v9 vs
+  v10 over the SAME 52 contexts isolates training-vs-averaging — mlp-EMB H@100 v9@52=28 → v10@52=**39** → v10@132=44,
+  i.e. ~⅔ of the gain (+11 of +16) is a **real training benefit** from the extra data, ~⅓ is pooling variance-reduction.
+  But the benefit is **mid-rank only** (H@100); MRR/H@10 flat, still ≪ ESM, context-lift didn't rise. Conclusion: more
+  data gives incremental mid-rank returns but not the top-rank/ESM-dominance step-change → **objective pivot**
+  (supervised target head, or non-co-expression context label) is the higher-leverage move. Endothelial (70 ctx, 5 EC
+  states) → **v11 (FULL 0.796/lift +0.106; rerun on 203 ctx)**; B cells (5 states, 73 ctx) building → v12.
+- **Classifier methodology fix + MLP2 failure (2026-07-10).** The pooled target classifier had been global-pooling
+  each protein across ALL diseases (washes out context, favors disease-invariant ESM); fixed to **per-disease pool +
+  max-P-across-diseases**. Verdict unchanged: ESM > EMB in every build (mlp-EMB ~half of mlp-ESM MRR). Separately
+  tried an **MLP2 rank-weighted-pairwise (LambdaMRR) readout** (hard negs → random negs → continuous OT-association
+  graded, disease-specific): **all FAILED** (EMB worse than pointwise BCE with hard negs; no lift with random; ≪ ESM
+  on continuous) → **readout-loss changes are a dead end; removed.** Net: both "more data" and "change the readout
+  loss" give only mid-rank/no gains → the remaining lever is **fine-tuning the encoder** with a supervised objective.
+- **B-cell + Bipolar-I builds → v12/v13; full downstream battery — VERDICT (2026-07-13), detail in `SEQ_CONTEXT_EMBED.md`.**
+  293 contexts (added B-cell 73 + bipolar 18 = 3 glial/neuronal cell types; bipolar OT labels pulled, MONDO_0004985).
+  FULL AUC plateaued (v9 0.765→v12 0.807). Tried, all confirm the frozen-readout ceiling: **(v13) edge-weighting** (upweight
+  context-specific edges) → lift +0.106→**+0.234** but *by construction* (BLIND<chance), recovery **down**; **attention-MIL**
+  over per-context embeddings ≈ mean-pool (no gain); recovery is **ESM sequence-family-bound** (GO-class + OT MoA breakdown —
+  ESM wins tight families GPCR/ion-channel/PDE; EMB only wins tubulin/GTPase); **3 no-ML geometry tests** — disease→healthy
+  Δz is real in magnitude (~0.4× inter-protein dist) but **incoherent in direction** (target Δz ~orthogonal, within-cos ~0.05)
+  and **non-recoverable** (disease-centroid LOO H@10 0–2). **Conclusion: frozen-readout link-pred doesn't convert context into
+  a useful representation; the disease-target signal isn't in the geometry. Only structurally untried lever = FINE-TUNE THE
+  ENCODER (backprop into the representation) or a context-requiring target task.**
+- **ARC CONCLUDED (2026-07-13) — state-specific protein embeddings not learnable from transcriptomics; detail in `SEQ_CONTEXT_EMBED.md`.**
+  Tried label-only models: v15 (reconstruct SCENIC neighbors from [protein-ID,disease,tissue,state]; recon AUC 0.994 but
+  context-token islands), v16 (predict expression; best embedding but ≈ differential expression), v17 (v16 + pathway head;
+  FAILED — diluted IL12B/MMP9). **v16/v17 embeddings recover OT targets at CHANCE** (H@100 5 vs ESM 77) → target-ness is a
+  sequence/identity property (ESM family shadow), orthogonal to the cell-state signal the embeddings learn. **Synthesis:** what
+  distinguishes proteins (neighbors, sequence) is ~context-invariant; what distinguishes contexts (expression/pathway/SCENIC
+  regulon activity) are cell-state properties ~shared across proteins; the protein×context interaction we'd need is the tiny
+  residual, and the layer carrying it (protein activity/PTM) isn't in RNA (Crohn's proteomics = bulk-only per PRIDE; CELLxGENE
+  metadata = categorical disease, no severity). SCENIC = co-expression + context-invariant motif filter (not an independent
+  layer). **What works = model-free cross-disease Δ** (disease-specific: MMP7/IL1R2; pan-disease macrophage homeostatic-metabolic
+  loss: CAT/NCF4/BLVRB/AKR1B1) + driver hypotheses (STAT1→JAK, IL12B→ustekinumab). Redirection = continuous disease manifolds
+  (scVI/CPA, cell-level), not protein embeddings.
+- **DIRECTION CHANGE (2026-07-13) — pivot back to drug-repurposing (discussion, nothing built yet).** Strategic conclusions from
+  scoping where repurposing needs help: **(1) candidate GENERATION is saturated** (hundreds of methods: signature-reversal,
+  network-proximity, target-based, KG-embeddings) — do NOT add another predictor. **(2) Real gaps** = rigorous *deconfounded/prospective
+  evaluation-benchmarking* (current eval circularly re-predicts known pairs), *mechanism+direction+efficacy* (methods stop at target
+  overlap, ignore whether the drug opposes the disease direction / acts in the right cell type / changes phenotype), and *heterogeneity*
+  (disease-level, patient/cell-state-agnostic). **(3) Our embedding models do NOT translate** (proven signal-free for targets — chance
+  recovery). **(4) Mechanistic-grounding via overlays** (direction-match [disease Δ vs drug inhibitor/agonist] + cell-context + OT
+  genetics + SCENIC/Reactome pathway chain) is genuinely USEFUL and reuses what worked (model-free DE, cell-context, OT) — but it is
+  **standard integrative bioinformatics, NOT novel** (OpenTargets already does genetics→target→drug). **(5) What expression misses** =
+  protein *activity*/PTM, *small molecules/metabolites* (bile acids/SCFA/tryptophan — central to gut/IBD), causal genetics — but for our
+  data these exist only as **static reference/annotation** (HMDB, ChEMBL, OT), which behave like ESM (enrich identity, add no *context*
+  signal). **(6) Resolution mismatch:** metabolomics is **bulk (tissue/biofluid)**, proteomics is **bulk or sorted cell-type** (deep
+  single-cell proteomics rare; single-cell protein = targeted CyTOF/CITE-seq only), and Crohn's proteomics on PRIDE is **bulk-only** — so
+  any orthogonal layer fuses at **tissue/cell-type, not single-cell**, sacrificing our only edge. **Honest state:** with our data
+  (transcriptomics + networks + OT; no perturbation, no context proteomics/metabolomics, no clinical outcomes), there is **no clear NOVEL
+  repurposing-modeling contribution** — the novel gaps need data we lack; the doable parts aren't novel. Options on the table: build the
+  useful-but-not-novel mechanistic repurposing *tool/resource*, or reframe to the evaluation/causal-inference gap (a methods project, not
+  an embedding). No decision committed.
+- **Drug-target recovery = ESM-shadow (confirmed), PIVOT to disease-driver reversal (2026-07-13), detail in `SEQ_CONTEXT_EMBED.md`.**
+  Decisive test: an UNTRAINED random-init encoder scores ~90% of any trained model on target recovery (macrophage H@100 47 vs
+  52–54) → the signal is a frozen-ESM shadow (druggability = sequence-family + Reactome-annotation richness, OT targets in ~2×
+  more pathways), not learned. Root cause is structural, not a bug: the regulatory net doesn't encode drug-target-ness (227/242
+  targets are passive non-TF nodes; targets indistinguishable by degree). Reframed to "what DRIVES the disease" — built a
+  **connectivity autoencoder** (`seq_context/validation/macrophage_ae_reversal.py`, no ESM, reconstructs each protein's
+  regulatory-neighbor set → latent role), Crohn-vs-healthy macrophage latent shift → top drivers. **First face-valid result:**
+  STAT1 (→JAK inhibitors, approved IBD), CEBPB, HES1, JUNB (reduce) + SPIC/SPIB (restore). All TFs (network is TF→target →
+  finds drivers not druggable targets); correlational + degree-weighted, but recovers known IBD drivers. Disease-driver is the
+  data-appropriate question; the protein link-pred embedding was the wrong instrument.
+- **v15 + quantified disease-signal ceiling (2026-07-13), detail in `SEQ_CONTEXT_EMBED.md`.** v15 (`train_v15_reconstruct.py`):
+  encoder = learned [protein-ID, disease, tissue, cell-type, state] embeddings (NO ESM) → reconstruct the protein's network
+  neighbors; recon AUC 0.994; Crohn drivers SPI1/STAT1/HES1/ATF3/EGR1 (reproduce the AE hits), still TF-only + degree-weighted.
+  **Ceiling proven quantitatively:** variance decomposition — protein identity 55%, disease **0.6%**, tissue 0.9%, state 0.2%;
+  within-protein ΔZ ~98% idiosyncratic. Per-protein permutation null: true disease excess **+1.8%** (raw 20.7% is 18.9%
+  overfitting), sparse — concentrated in a few genes (ETV7 +23%), negative for ~40%. So disease is **~1–2% of embedding
+  variance, sparse**. **Overall verdict: the task as posed (learn drug targets / what-to-perturb from observational
+  expression/network data) is NOT accomplishable — causal question, correlational data; data-type limit, not a model bug.**
+  Achievable deliverable = ranked disease-driver hypotheses (STAT1→JAK) for wet-lab validation.

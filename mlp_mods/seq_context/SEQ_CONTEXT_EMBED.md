@@ -1,5 +1,16 @@
 # SEQ_CONTEXT_EMBED.md — context-specific protein embedding via regulatory-neighbor link prediction
 
+**STATUS (2026-07-13) — ARC CONCLUDED.** Bottom line: **state-specific protein embeddings are not learnable from
+transcriptomics alone** — see "Why state-specific protein embeddings are data-limited" below. Target recovery is an
+ESM/sequence-family shadow (v16/v17 embeddings recover targets at *chance*); disease signal is a **cell-state**
+property (expression/pathway/SCENIC all collapse to disease×state UMAP islands, not protein-specific); the
+protein×context *interaction* we'd need is tiny, and the layer that carries it (protein **activity/PTM**) isn't in RNA
+(and Crohn's proteomics is bulk-only). **What works = model-free differential analysis** (cross-disease Δ →
+disease-specific vs pan-disease signatures) and **disease-driver *hypotheses*** (STAT1→JAK, IL12B→ustekinumab).
+Models tried: v14 (pathway aux, small lift-but-ESM-shadow), v15 (reconstruct network, context-token islands), v16
+(predict expression = best embedding, but ≈DE), v17 (v16+pathway head, FAILED). Productive redirection = **continuous
+disease manifolds** (scVI/CPA cell-level), not protein embeddings. Older dated status below is historical.
+
 **Status (2026-07-10): v12 DONE (252 contexts = v11 203 + 49 B-cell; FULL test AUC 0.805 / AP 0.798). The training
 objective is context-specific regulatory-neighbor link prediction, and the model is monotonically better at it as
 data grows: FULL AUC v9 0.765 → v10 0.785 → v11 0.799 → v12 0.805. That IS the representation capturing more
@@ -812,6 +823,33 @@ and the data is **observational**, so it's **not accomplishable as posed** — a
 not asserted). The achievable deliverable is **ranked disease-driver *hypotheses*** (STAT1→JAK etc.) for downstream
 validation — standard differential analysis, doesn't need the fancy embedding. Reconstructing TF-networks → TF drivers;
 reconstructing expression → scGen-style DE markers (cell-level); neither escapes the ceiling.
+
+## Why state-specific protein embeddings are data-limited — the synthesis (2026-07-13)
+The central finding of the whole arc, stated cleanly:
+
+**Two nearly-orthogonal axes, and we need their (tiny) product.**
+- **What distinguishes *proteins* (within a context)** = their **neighbors** (interaction/regulatory partners) and their **sequence**. These are strongly protein-specific but **~context-invariant** (a protein's wiring shifts ~1–2% between disease/healthy — the connectivity-AE measurement).
+- **What distinguishes *contexts*** = **expression, pathway activity, regulator activity**. These are strong, but they are **cell-state properties** — nearly the same for every protein in a context (weak per-protein targets).
+- The quantity a state-specific protein embedding needs — **how *this protein* behaves in *this disease*** — is the **protein×context interaction**, which is the small residual after both main effects. Every transcriptomic training target we tried collapsed to disease×state clusters because context explains ~90%+ of the supervision and protein identity the small rest.
+
+**CORRECTION to earlier "~1–2%" claim:** that figure was the disease shift in the **network-wiring** embedding, NOT universal. The disease signal in **expression** is *large* and protein-specific (v17-delta R²≈0.97) — but that's **differential expression** (markers), and it's a cell-state readout, not a protein-embedding signal. So: disease signal is large in expression (markers), tiny in wiring, and the protein×context *interaction* is small everywhere.
+
+**SCENIC is co-expression + a motif filter, not an independent layer.** cisTarget's motif prior is context-invariant, so the context-varying part of SCENIC edges *is* co-expression. Learning "neighbors" via cisTarget gave the same disease×state UMAP islands — because it's a cell-state property too.
+
+**The missing layer is protein *activity* (PTM/localization/complex formation)** — the one thing that varies across *both* proteins and contexts — and it's **not in transcriptomics**. PRIDE check: Crohn's proteomics is **bulk-only** (serum/feces/tissue); no single-cell/cell-type MS proteomics. Spatial transcriptomics for Crohn's is abundant but still RNA. CELLxGENE metadata: categorical disease only, **no severity/quantitative measure**.
+
+## v17 (+pathway head) FAILED; v16 target recovery is RANDOM (2026-07-13)
+- **v17 = v16 + a second pathway-activity head** (`train_v17_expr_pathway.py`, membership-gated, λ=0.5). Expression R² held (0.941), but the **driver list got worse**: v16's validated targets (IL12B/ustekinumab, MMP9) **dropped out**, replaced by pathway-connected housekeeping genes (V-ATPase, Rab, ubiquitin). Pathway activity is expression-derived → adding it reshaped the embedding around pathway membership and **diluted** the specific DE signal. UMAP: sharpened back into per-context islands (like v15). **Net: pathway addition = negative; v16 stays best.**
+- **v17/v16 embeddings recover OT targets at CHANCE.** MLP over v17 EMB: H@10=1, H@100=5, MRR=0.0018 — vs random expectation H@100≈4.8, MRR≈0.0013 (i.e. **random**); ESM = H@100=77, MRR=0.0153. So the **expression embedding carries no drug-target signal** — target-ness is a sequence/identity property (ESM's family shadow), orthogonal to the cell-state signal the embedding learned. Clean confirmation of the two-axis synthesis.
+- **v16 IS a neural matrix factorization** of the protein×context expression matrix (protein-ID latent ⊕ context latent → MLP → expression). The latent is context-dominated because the matrix is main-effect-dominated; the interaction (protein×context) is the small residual. Untried variant: **bias-decomposed MF** (`expr = protein_bias + context_bias + ⟨zP,zC⟩`) to *isolate* and quantify the interaction term directly.
+
+## What DOES work — model-free cross-disease Δ (2026-07-13)
+Δ = disease − healthy per gene, macrophage, tissue-matched, across crohn/uc/ild/hvd (no model, no embedding):
+- **Biggest changers are disease-SPECIFIC** (MMP7, IL1R2, CCL7 — e.g. MMP7 up in IBD/ILD, down in heart-valve).
+- **Consistent-direction (all 4 diseases) = a pan-disease macrophage signature**: coordinated **down-regulation of homeostatic metabolic/oxidative genes** (AKR1B1, CAT, BLVRB, NCF4, PLD3) + a few up (MSC, GPR157) — the resident→inflammatory shift. Real, interpretable, and it *cleanly separates disease-specific from shared* — which no embedding did.
+- **This is the readout that fits the data:** model-free differential analysis, cell-state-level, interpretable. The embeddings were the wrong instrument.
+
+**Productive redirection (discussion, not built):** since the continuous signal in transcriptomics is *disease/cell-state* (not protein identity), the data-appropriate questions are **continuous disease manifolds** — disease trajectories, disease similarity, interpretable disease axes (inflammation/IFN/proliferation/metabolism), and "how does protein X move across the healthy→inflamed manifold" (a protein *function over the manifold*, not a standalone embedding). That's scVI/CPA territory (cell-level), and it uses the data as it's actually structured.
 
 ## Roadmap
 - …heart_valve→v9 ✅ · T-cells→v10 ✅ · endothelial→v11 ✅ · **B-cells→v12 ✅** · **Bipolar-I→v12-rerun ✅ (293 ctx, FULL 0.807; bipolar OT labels pulled + wired in)** · **MLP2 (FAILED) · v13 edge-weighting (FAILED — lift↑ by construction, recovery↓) · attention-MIL (FAILED — ≈mean-pool) · 3 no-ML geometry tests (disease shift incoherent + non-recoverable)**.
