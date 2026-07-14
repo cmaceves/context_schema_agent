@@ -743,6 +743,76 @@ directly-druggable targets — bridge driver→pathway→drug, e.g. STAT1→JAK)
 recovering known IBD drivers (STAT1, CEBPB) is real face-validity the target readouts never had. **This is the
 data-appropriate question**; the protein link-prediction embedding was the wrong instrument.
 
+## Architecture diagrams — v15 & v16 (label-only, NO ESM) — for verification
+Both share the SAME input + encoder (all inputs are learned `nn.Embedding`s; NO ESM). They differ ONLY in the
+decoder + target. Macrophage-only, so cell_type has 1 value (constant).
+
+```
+v15  (reconstruct the network)                     v16  (predict expression)
+────────────────────────────────                   ──────────────────────────────
+ INPUT  (one row = one protein-in-a-context), all LEARNED embeddings, NO ESM:
+
+   protein-ID   disease   tissue   cell_type   state        ◄── protein-ID = the IDENTITY vector
+   Embedding    Embed     Embed    Embed       Embed             (separate from the 4 context tokens)
+   128-d        32-d      32-d     32-d(×1)    32-d
+      └───────────┴─────────┴────────┬──────────┘
+                      concat  (128 + 4×32 = 256-d)
+                                 ▼
+                Encoder MLP:  256 → 256 → ReLU → 64
+                                 ▼
+                    z   (64-d latent = the deliverable, saved to embeddings.npz)
+                                 ▼
+        ┌────────────────────────┴────────────────────────┐
+        ▼  v15 decoder                                     ▼  v16 decoder
+   MLP: 64 → 256 → ReLU → G(=9543 genes)             MLP: 64 → 256 → ReLU → 1
+        ▼   logits over all genes                          ▼   scalar
+   sigmoid → P(protein connects to gene g)           predicted expression value
+        ▼                                                  ▼
+   BCE  vs the protein's TRUE neighbor set            MSE  vs the protein's TRUE expression
+        in this context (cisTarget edges)                  in this context (expression_activity.tsv, z-scored)
+   [network is OUTPUT only]                           [expression is OUTPUT only]
+```
+Key property: the **network/expression is the OUTPUT**, never the input — so the label embeddings (esp. protein-ID)
+must LEARN the structure. v15 recon AUC **0.994**; v16 expression R² **0.949** (from labels only). Latent-variance
+split differs by decoder: **v15 z** = context-dominated (identity 15.7%, disease/tissue/state ~40/40/31%);
+connectivity-AE (no explicit context tokens) = identity-dominated (55%). Contrast with **v12** (`Architecture` above):
+v12 fed **frozen ESM** for the protein and used a **link-prediction** decoder (score TF–target *pairs*); v15/v16 use a
+**learned protein-ID** and **reconstruct** a protein's whole output vector.
+
+## v15 (reconstruct-network from labels) + quantified disease-signal ceiling (2026-07-13)
+**v15 (`scripts/train_v15_reconstruct.py`, `results/link_v15/`)** — the architecture the user actually wanted:
+encoder = learned embeddings of **[protein-ID, disease, tissue, cell-type, state]** (NO ESM) → latent z → decoder
+**reconstructs the protein's regulatory-neighbor set** (network is OUTPUT only, so label embeddings must learn the
+structure). Macrophage only, 108,898 protein×context rows. **Reconstruction AUC 0.994** from labels alone — the model
+works as designed. Crohn disease→healthy drivers: **SPI1/PU.1** (macrophage master TF), **STAT1** (IFN/JAK→approved IBD),
+**HES1/HES2, ATF3, EGR1** (reduce), ETS2 (restore); HES1/STAT1/BCLAF1 **reproduce the connectivity-AE** → real signals
+are cross-model consistent. Caveat: **drivers are all TFs** (network is TF→target → reconstructing it surfaces
+regulators, not druggable effectors), still **degree-weighted** (SPI1 = biggest hub), and recon AUC 0.994 is mostly the
+protein-ID memorizing baseline wiring (disease = small modulation).
+
+**Quantified how small the disease signal is (the ceiling, proven):**
+- **Variance decomposition** of the connectivity-AE latent (`validation/deltaz_decomp.py`): protein **identity 55%**,
+  tissue 0.9%, **disease 0.6%**, state 0.2%. Between-protein (identity) 55% vs within-protein (all context) 45%; of the
+  within-protein ΔZ, disease 0.6% / tissue 0.8% / state 0.4% → **~98% is idiosyncratic per-context rewiring**, not a clean
+  biological factor. (No ESM here — so identity-dominance is intrinsic to regulatory wiring, not an ESM artifact.)
+- **Per-protein permutation null** on 25 changing proteins: raw disease η² ~20.7% is **18.9% overfitting** (10 one-hot
+  params on ~20 pts) → **true disease excess only +1.8%** (state +3.9%). For ~10/25 proteins disease excess is *negative*.
+  **The disease signal is sparse:** concentrated in a few genes (ETV7 +22.9%, and by extension STAT1/CEBPB) — most
+  proteins carry none. This is why pooling many contexts is needed to expose drivers, and why UMAP shows no state/disease
+  structure (`images/macrophage_umap_state.png` — one intermixed cloud).
+- **v15 within-vs-between distance** (Crohn OT targets): within-protein (Crohn→healthy) **33.2 ± 2.25** > between-target
+  (Crohn) **12.9 ± 7.2**, ratio **2.59** — FLIPS v12's 0.42. BUT within-std is ~7% → the disease→healthy move is nearly
+  **identical for every target** = a **shared disease-TOKEN global offset** (the additive-offset failure mode), not
+  protein-specific signal. v15 is **context-token-dominated** (learned IDs stayed close); v12 was ESM-identity-dominated.
+  Either way the *protein-specific* disease info is tiny.
+
+**Verdict (honest):** the disease effect on protein embeddings is **~1–2% of the variance and sparse** (a handful of genes).
+Drug-target prediction is an ESM/annotation shadow (untrained ≈ trained); "what reverses disease" is a **causal** question
+and the data is **observational**, so it's **not accomplishable as posed** — a data-type limit, not a model bug (proven,
+not asserted). The achievable deliverable is **ranked disease-driver *hypotheses*** (STAT1→JAK etc.) for downstream
+validation — standard differential analysis, doesn't need the fancy embedding. Reconstructing TF-networks → TF drivers;
+reconstructing expression → scGen-style DE markers (cell-level); neither escapes the ceiling.
+
 ## Roadmap
 - …heart_valve→v9 ✅ · T-cells→v10 ✅ · endothelial→v11 ✅ · **B-cells→v12 ✅** · **Bipolar-I→v12-rerun ✅ (293 ctx, FULL 0.807; bipolar OT labels pulled + wired in)** · **MLP2 (FAILED) · v13 edge-weighting (FAILED — lift↑ by construction, recovery↓) · attention-MIL (FAILED — ≈mean-pool) · 3 no-ML geometry tests (disease shift incoherent + non-recoverable)**.
 - **Established (2026-07-13):** frozen-readout approach doesn't convert context into a useful representation; target recovery is ESM sequence-family-bound; no coherent/recoverable disease axis. See "Downstream diagnostics".
